@@ -1,0 +1,2221 @@
+-- Archivo todo-en-uno: schema.sql + seed.sql (generado por scripts/generate-seed.mjs)
+
+-- =====================================================================
+-- KASA · Esquema de base de datos para Supabase (Postgres)
+-- ---------------------------------------------------------------------
+-- Cómo usarlo: Supabase → SQL Editor → New query → pega este archivo → Run
+-- Después ejecuta supabase/seed.sql (datos de ejemplo de Santiago).
+-- Es re-ejecutable: no borra datos de usuarios reales.
+-- =====================================================================
+
+
+-- =====================================================================
+-- 1. TABLAS
+-- =====================================================================
+
+-- Configuración global (una sola fila). La comisión se cambia aquí.
+create table if not exists public.platform_settings (
+  id int primary key default 1 check (id = 1),
+  commission_rate numeric(5,4) not null default 0.10
+    check (commission_rate >= 0 and commission_rate < 1),
+  currency text not null default 'CLP',
+  updated_at timestamptz not null default now()
+);
+insert into public.platform_settings (id) values (1) on conflict (id) do nothing;
+
+-- Perfil de cada usuario (se crea solo al registrarse)
+create table if not exists public.profiles (
+  id uuid primary key references auth.users (id) on delete cascade,
+  full_name text not null default '',
+  avatar_url text,
+  phone text,
+  comuna text,
+  is_admin boolean not null default false,
+  created_at timestamptz not null default now()
+);
+
+-- Categorías de servicios
+create table if not exists public.categories (
+  id text primary key,
+  name text not null,
+  icon text not null,
+  color text not null,
+  keywords text not null default '',
+  sort int not null default 0
+);
+
+-- Profesionales (perfil público). user_id = null → profesional de ejemplo (demo)
+create table if not exists public.providers (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid unique references public.profiles (id) on delete cascade,
+  category_id text not null references public.categories (id),
+  display_name text not null check (length(display_name) between 2 and 60),
+  headline text not null default '',
+  bio text not null default '',
+  avatar_url text,
+  cover_url text,
+  comuna text not null default '',
+  lat double precision not null,
+  lng double precision not null,
+  service_radius_km int not null default 10 check (service_radius_km between 1 and 100),
+  price_from int not null default 0,
+  years_experience int not null default 0 check (years_experience between 0 and 60),
+  available boolean not null default true,
+  verified boolean not null default false,
+  is_demo boolean not null default false,
+  rating_avg numeric(3,2) not null default 0,
+  rating_count int not null default 0,
+  jobs_count int not null default 0,
+  followers_count int not null default 0,
+  response_minutes int not null default 15,
+  created_at timestamptz not null default now()
+);
+create index if not exists providers_category_idx on public.providers (category_id);
+
+-- Datos privados del profesional (solo los ve él; el cliente recibe el
+-- teléfono cuando la reserva está aceptada, vía booking_contact()).
+create table if not exists public.provider_private (
+  provider_id uuid primary key references public.providers (id) on delete cascade,
+  phone text not null default ''
+);
+
+-- Servicios que ofrece cada profesional
+create table if not exists public.services (
+  id uuid primary key default gen_random_uuid(),
+  provider_id uuid not null references public.providers (id) on delete cascade,
+  title text not null check (length(title) between 2 and 80),
+  description text not null default '',
+  price int not null check (price >= 0 and price <= 100000000),
+  duration_min int not null default 60 check (duration_min between 5 and 1440),
+  active boolean not null default true,
+  created_at timestamptz not null default now()
+);
+create index if not exists services_provider_idx on public.services (provider_id);
+
+-- Publicaciones (portafolio / red social de trabajos)
+create table if not exists public.posts (
+  id uuid primary key default gen_random_uuid(),
+  provider_id uuid not null references public.providers (id) on delete cascade,
+  image_url text not null,
+  caption text not null default '',
+  likes_count int not null default 0,
+  created_at timestamptz not null default now()
+);
+create index if not exists posts_provider_idx on public.posts (provider_id, created_at desc);
+create index if not exists posts_created_idx on public.posts (created_at desc);
+
+create table if not exists public.post_likes (
+  post_id uuid not null references public.posts (id) on delete cascade,
+  user_id uuid not null references public.profiles (id) on delete cascade,
+  created_at timestamptz not null default now(),
+  primary key (post_id, user_id)
+);
+
+-- Profesionales guardados / seguidos
+create table if not exists public.favorites (
+  user_id uuid not null references public.profiles (id) on delete cascade,
+  provider_id uuid not null references public.providers (id) on delete cascade,
+  created_at timestamptz not null default now(),
+  primary key (user_id, provider_id)
+);
+
+-- Reservas + pago simulado (nunca se guarda el número completo de tarjeta)
+create table if not exists public.bookings (
+  id uuid primary key default gen_random_uuid(),
+  code text not null unique default upper(substr(md5(gen_random_uuid()::text), 1, 6)),
+  client_id uuid references public.profiles (id) on delete cascade,
+  client_name text not null default '',
+  provider_id uuid not null references public.providers (id) on delete cascade,
+  service_id uuid references public.services (id) on delete set null,
+  service_title text not null,
+  scheduled_at timestamptz not null,
+  address text not null,
+  lat double precision,
+  lng double precision,
+  notes text not null default '',
+  price int not null check (price >= 0),
+  commission_rate numeric(5,4) not null,
+  commission_amount int not null,
+  provider_amount int not null,
+  status text not null default 'pending'
+    check (status in ('pending', 'accepted', 'rejected', 'cancelled', 'completed')),
+  payment_status text not null default 'held'
+    check (payment_status in ('held', 'released', 'refunded')),
+  payment_ref text not null default ('pay_' || substr(md5(gen_random_uuid()::text), 1, 16)),
+  card_brand text not null default 'Tarjeta',
+  card_last4 text not null default '0000' check (card_last4 ~ '^[0-9]{4}$'),
+  is_demo boolean not null default false,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  accepted_at timestamptz,
+  completed_at timestamptz,
+  cancelled_at timestamptz,
+  check (is_demo or client_id is not null)
+);
+create index if not exists bookings_client_idx on public.bookings (client_id, created_at desc);
+create index if not exists bookings_provider_idx on public.bookings (provider_id, created_at desc);
+
+-- Reseñas
+create table if not exists public.reviews (
+  id uuid primary key default gen_random_uuid(),
+  provider_id uuid not null references public.providers (id) on delete cascade,
+  booking_id uuid unique references public.bookings (id) on delete set null,
+  client_id uuid references public.profiles (id) on delete set null,
+  author_name text not null,
+  author_avatar text,
+  rating int not null check (rating between 1 and 5),
+  comment text not null default '',
+  created_at timestamptz not null default now()
+);
+create index if not exists reviews_provider_idx on public.reviews (provider_id, created_at desc);
+
+-- Chat cliente ↔ profesional
+create table if not exists public.conversations (
+  id uuid primary key default gen_random_uuid(),
+  client_id uuid not null references public.profiles (id) on delete cascade,
+  provider_id uuid not null references public.providers (id) on delete cascade,
+  last_message text not null default '',
+  last_message_at timestamptz not null default now(),
+  client_last_read_at timestamptz not null default now(),
+  provider_last_read_at timestamptz not null default 'epoch',
+  created_at timestamptz not null default now(),
+  unique (client_id, provider_id)
+);
+create index if not exists conversations_provider_idx on public.conversations (provider_id);
+
+create table if not exists public.messages (
+  id uuid primary key default gen_random_uuid(),
+  conversation_id uuid not null references public.conversations (id) on delete cascade,
+  sender_id uuid references public.profiles (id) on delete set null,
+  sender_role text not null check (sender_role in ('client', 'provider', 'system')),
+  body text not null check (length(body) between 1 and 2000),
+  created_at timestamptz not null default now()
+);
+create index if not exists messages_conversation_idx on public.messages (conversation_id, created_at);
+
+-- Notificaciones dentro de la app
+create table if not exists public.notifications (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references public.profiles (id) on delete cascade,
+  type text not null,
+  title text not null,
+  body text not null default '',
+  link text,
+  read boolean not null default false,
+  created_at timestamptz not null default now()
+);
+create index if not exists notifications_user_idx on public.notifications (user_id, created_at desc);
+
+
+-- =====================================================================
+-- 2. FUNCIONES AUXILIARES
+-- =====================================================================
+
+-- Normaliza texto para búsquedas (minúsculas y sin tildes)
+create or replace function public.norm(t text)
+returns text
+language sql immutable parallel safe
+set search_path = public
+as $$
+  select translate(lower(coalesce(t, '')),
+    'áàäâãéèëêíìïîóòöôõúùüûñç',
+    'aaaaaeeeeiiiiooooouuuunc')
+$$;
+
+-- $15.000
+create or replace function public.fmt_clp(n int)
+returns text
+language sql immutable
+set search_path = public
+as $$
+  select '$' || replace(to_char(coalesce(n, 0), 'FM999,999,999,990'), ',', '.')
+$$;
+
+-- 12/10 11:00 (hora de Chile)
+create or replace function public.fmt_date(ts timestamptz)
+returns text
+language sql stable
+set search_path = public
+as $$
+  select to_char(ts at time zone 'America/Santiago', 'DD/MM HH24:MI')
+$$;
+
+create or replace function public.is_admin()
+returns boolean
+language sql stable security definer
+set search_path = public
+as $$
+  select coalesce((select p.is_admin from public.profiles p where p.id = auth.uid()), false)
+$$;
+
+create or replace function public.notify_user(p_user uuid, p_type text, p_title text, p_body text, p_link text)
+returns void
+language sql security definer
+set search_path = public
+as $$
+  insert into public.notifications (user_id, type, title, body, link)
+  select p_user, p_type, p_title, coalesce(p_body, ''), p_link
+  where p_user is not null
+$$;
+
+-- Mensaje de sistema en el chat de una reserva
+create or replace function public.booking_system_message(p_client uuid, p_provider uuid, p_body text)
+returns void
+language plpgsql security definer
+set search_path = public
+as $$
+declare
+  v_conv uuid;
+begin
+  if p_client is null then
+    return;
+  end if;
+  insert into public.conversations (client_id, provider_id)
+  values (p_client, p_provider)
+  on conflict (client_id, provider_id) do update set last_message_at = excluded.last_message_at
+  returning id into v_conv;
+
+  insert into public.messages (conversation_id, sender_id, sender_role, body)
+  values (v_conv, null, 'system', p_body);
+end $$;
+
+
+-- =====================================================================
+-- 3. TRIGGERS
+-- =====================================================================
+
+-- Crear perfil al registrarse
+create or replace function public.handle_new_user()
+returns trigger
+language plpgsql security definer
+set search_path = public
+as $$
+begin
+  insert into public.profiles (id, full_name, phone)
+  values (
+    new.id,
+    coalesce(nullif(trim(new.raw_user_meta_data ->> 'full_name'), ''), split_part(coalesce(new.email, 'usuario'), '@', 1)),
+    nullif(trim(new.raw_user_meta_data ->> 'phone'), '')
+  )
+  on conflict (id) do nothing;
+
+  insert into public.notifications (user_id, type, title, body, link)
+  values (new.id, 'welcome', '¡Te damos la bienvenida!',
+          'Busca un servicio y contacta al profesional más cercano o mejor valorado.', '/app');
+  return new;
+end $$;
+
+drop trigger if exists on_auth_user_created on auth.users;
+create trigger on_auth_user_created
+  after insert on auth.users
+  for each row execute function public.handle_new_user();
+
+-- "Desde $X": precio mínimo de los servicios activos
+create or replace function public.sync_price_from()
+returns trigger
+language plpgsql security definer
+set search_path = public
+as $$
+declare
+  v_provider uuid := coalesce(new.provider_id, old.provider_id);
+begin
+  update public.providers p
+     set price_from = coalesce((select min(s.price) from public.services s
+                                 where s.provider_id = v_provider and s.active), 0)
+   where p.id = v_provider;
+  return null;
+end $$;
+
+drop trigger if exists services_price_from on public.services;
+create trigger services_price_from
+  after insert or update or delete on public.services
+  for each row execute function public.sync_price_from();
+
+-- Valoración media (incremental: respeta el histórico de los perfiles demo)
+create or replace function public.apply_review()
+returns trigger
+language plpgsql security definer
+set search_path = public
+as $$
+begin
+  update public.providers p
+     set rating_avg = round(((p.rating_avg * p.rating_count) + new.rating) / (p.rating_count + 1), 2),
+         rating_count = p.rating_count + 1
+   where p.id = new.provider_id;
+  return null;
+end $$;
+
+drop trigger if exists reviews_apply on public.reviews;
+create trigger reviews_apply
+  after insert on public.reviews
+  for each row execute function public.apply_review();
+
+-- Contador de likes
+create or replace function public.sync_likes()
+returns trigger
+language plpgsql security definer
+set search_path = public
+as $$
+begin
+  if tg_op = 'INSERT' then
+    update public.posts set likes_count = likes_count + 1 where id = new.post_id;
+  else
+    update public.posts set likes_count = greatest(likes_count - 1, 0) where id = old.post_id;
+  end if;
+  return null;
+end $$;
+
+drop trigger if exists post_likes_count on public.post_likes;
+create trigger post_likes_count
+  after insert or delete on public.post_likes
+  for each row execute function public.sync_likes();
+
+-- Contador de seguidores (guardados)
+create or replace function public.sync_followers()
+returns trigger
+language plpgsql security definer
+set search_path = public
+as $$
+begin
+  if tg_op = 'INSERT' then
+    update public.providers set followers_count = followers_count + 1 where id = new.provider_id;
+  else
+    update public.providers set followers_count = greatest(followers_count - 1, 0) where id = old.provider_id;
+  end if;
+  return null;
+end $$;
+
+drop trigger if exists favorites_count on public.favorites;
+create trigger favorites_count
+  after insert or delete on public.favorites
+  for each row execute function public.sync_followers();
+
+-- Último mensaje de cada conversación
+create or replace function public.after_message()
+returns trigger
+language plpgsql security definer
+set search_path = public
+as $$
+begin
+  update public.conversations c
+     set last_message = left(new.body, 140),
+         last_message_at = new.created_at,
+         client_last_read_at = case when new.sender_role = 'client' then new.created_at else c.client_last_read_at end,
+         provider_last_read_at = case when new.sender_role = 'provider' then new.created_at else c.provider_last_read_at end
+   where c.id = new.conversation_id;
+  return null;
+end $$;
+
+drop trigger if exists messages_after_insert on public.messages;
+create trigger messages_after_insert
+  after insert on public.messages
+  for each row execute function public.after_message();
+
+
+-- =====================================================================
+-- 4. FUNCIONES DE LA APP (RPC)
+-- =====================================================================
+
+-- Búsqueda: texto + categoría + distancia (fórmula de Haversine) + orden
+drop function if exists public.search_providers(double precision, double precision, text, text, text, double precision, numeric, boolean, int);
+create or replace function public.search_providers(
+  p_lat double precision,
+  p_lng double precision,
+  p_query text default null,
+  p_category text default null,
+  p_sort text default 'recommended',
+  p_max_km double precision default null,
+  p_min_rating numeric default null,
+  p_available_only boolean default false,
+  p_limit int default 60
+)
+returns table (
+  id uuid,
+  display_name text,
+  headline text,
+  avatar_url text,
+  cover_url text,
+  category_id text,
+  category_name text,
+  comuna text,
+  lat double precision,
+  lng double precision,
+  rating_avg numeric,
+  rating_count int,
+  jobs_count int,
+  price_from int,
+  verified boolean,
+  available boolean,
+  is_demo boolean,
+  service_radius_km int,
+  response_minutes int,
+  distance_km double precision
+)
+language sql stable
+set search_path = public
+as $$
+  -- Cada palabra se reduce a su raíz ("cortar" → "cort", "mecánicos" → "mecani").
+  -- 1º se detecta la categoría que busca el usuario (nombre + palabras clave).
+  -- Si ninguna encaja, se buscan profesionales por nombre, frase, servicios o comuna.
+  with q as (
+    select coalesce(array(
+      select distinct case when length(w) <= 4 then w else left(w, greatest(4, length(w) - 2)) end
+      from unnest(regexp_split_to_array(public.norm(coalesce(p_query, '')), '[^a-z0-9]+')) as w
+      where length(w) >= 2
+        and w not in ('el', 'la', 'lo', 'de', 'en', 'un', 'me', 'mi', 'tu', 'se', 'al', 'es', 'te', 'le', 'ya', 'si',
+                      'no', 'su', 'yo', 'mis', 'para', 'que', 'una', 'uno', 'los', 'las', 'del', 'con', 'por', 'domicilio',
+                      'servicio', 'servicios', 'casa', 'necesito', 'busco', 'alguien', 'quien', 'mas', 'cerca', 'hoy',
+                      'urgente', 'barato', 'bueno', 'buena', 'mejor', 'quiero', 'favor', 'ahora', 'aqui', 'algun', 'alguna')
+    ), '{}') as words
+  ),
+  cat_scores as (
+    select c.id, (select count(*) from q, unnest(q.words) as w
+                  where position(w in public.norm(c.name || ' ' || c.keywords)) > 0) as score
+    from public.categories c
+  ),
+  cat_best as (
+    select coalesce(max(score), 0) as top from cat_scores
+  ),
+  base as (
+    select p.*, c.name as category_name,
+      6371 * 2 * asin(least(1, sqrt(
+        power(sin(radians(p.lat - p_lat) / 2), 2) +
+        cos(radians(p_lat)) * cos(radians(p.lat)) * power(sin(radians(p.lng - p_lng) / 2), 2)
+      ))) as dist,
+      public.norm(p.display_name || ' ' || p.headline || ' ' || p.bio || ' ' || p.comuna || ' ' ||
+        coalesce((select string_agg(s.title || ' ' || s.description, ' ') from public.services s
+                   where s.provider_id = p.id and s.active), '')) as haystack
+    from public.providers p
+    join public.categories c on c.id = p.category_id
+    where (p_category is null or p_category = '' or p.category_id = p_category)
+      and (not coalesce(p_available_only, false) or p.available)
+      and (p_min_rating is null or p.rating_avg >= p_min_rating)
+  ),
+  scored as (
+    select b.*, (select count(*) from q, unnest(q.words) as w where position(w in b.haystack) > 0) as hits
+    from base b
+    where (p_max_km is null or b.dist <= p_max_km)
+  ),
+  best as (
+    select coalesce(max(hits), 0) as top from scored
+  )
+  select b.id, b.display_name, b.headline, b.avatar_url, b.cover_url, b.category_id, b.category_name, b.comuna,
+         b.lat, b.lng, b.rating_avg, b.rating_count, b.jobs_count, b.price_from, b.verified, b.available,
+         b.is_demo, b.service_radius_km, b.response_minutes, round(b.dist::numeric, 2)::double precision
+  from scored b, best, q, cat_best
+  where cardinality(q.words) = 0
+     or (cat_best.top > 0 and b.category_id in (select cs.id from cat_scores cs where cs.score = cat_best.top))
+     or (cat_best.top = 0 and best.top > 0 and b.hits = best.top)
+  order by
+    case when p_sort = 'distance' then b.dist end asc,
+    case when p_sort = 'rating' then b.rating_avg end desc,
+    case when p_sort = 'rating' then b.rating_count end desc,
+    case when p_sort = 'price' then b.price_from end asc,
+    case when coalesce(p_sort, 'recommended') not in ('distance', 'rating', 'price') then
+      ((b.rating_avg * b.rating_count + 4.0 * 5) / (b.rating_count + 5))
+      - 0.08 * b.dist
+      + case when b.available then 0.15 else 0 end
+      + case when b.verified then 0.10 else 0 end
+    end desc,
+    b.dist asc
+  limit greatest(1, least(coalesce(p_limit, 60), 200))
+$$;
+
+-- Abrir (o reutilizar) el chat con un profesional
+create or replace function public.start_conversation(p_provider_id uuid)
+returns uuid
+language plpgsql security definer
+set search_path = public
+as $$
+declare
+  v_uid uuid := auth.uid();
+  v_owner uuid;
+  v_conv uuid;
+begin
+  if v_uid is null then
+    raise exception 'Debes iniciar sesión';
+  end if;
+  select user_id into v_owner from public.providers where id = p_provider_id;
+  if not found then
+    raise exception 'Profesional no encontrado';
+  end if;
+  if v_owner = v_uid then
+    raise exception 'No puedes escribirte a ti mismo';
+  end if;
+  insert into public.conversations (client_id, provider_id)
+  values (v_uid, p_provider_id)
+  on conflict (client_id, provider_id) do update set client_id = excluded.client_id
+  returning id into v_conv;
+  return v_conv;
+end $$;
+
+-- Marcar un chat como leído
+create or replace function public.mark_conversation_read(p_conversation_id uuid)
+returns void
+language plpgsql security definer
+set search_path = public
+as $$
+declare
+  v_uid uuid := auth.uid();
+begin
+  update public.conversations c
+     set client_last_read_at = case when c.client_id = v_uid then now() else c.client_last_read_at end,
+         provider_last_read_at = case when exists (select 1 from public.providers p
+                                                   where p.id = c.provider_id and p.user_id = v_uid)
+                                      then now() else c.provider_last_read_at end
+   where c.id = p_conversation_id;
+end $$;
+
+-- Crear reserva + pago simulado. La comisión se calcula en el servidor.
+create or replace function public.create_booking(
+  p_service_id uuid,
+  p_scheduled_at timestamptz,
+  p_address text,
+  p_lat double precision,
+  p_lng double precision,
+  p_notes text,
+  p_card_brand text,
+  p_card_last4 text
+)
+returns public.bookings
+language plpgsql security definer
+set search_path = public
+as $$
+declare
+  v_uid uuid := auth.uid();
+  v_service public.services;
+  v_provider public.providers;
+  v_rate numeric;
+  v_commission int;
+  v_client_name text;
+  v_booking public.bookings;
+begin
+  if v_uid is null then
+    raise exception 'Debes iniciar sesión para reservar';
+  end if;
+
+  select * into v_service from public.services where id = p_service_id and active;
+  if not found then
+    raise exception 'Este servicio ya no está disponible';
+  end if;
+
+  select * into v_provider from public.providers where id = v_service.provider_id;
+  if v_provider.user_id = v_uid then
+    raise exception 'No puedes contratar tu propio servicio';
+  end if;
+  if p_scheduled_at is null or p_scheduled_at < now() - interval '15 minutes' then
+    raise exception 'Elige una fecha y hora futura';
+  end if;
+  if coalesce(trim(p_address), '') = '' then
+    raise exception 'Indica la dirección del servicio';
+  end if;
+  if coalesce(p_card_last4, '') !~ '^[0-9]{4}$' then
+    raise exception 'Los datos de la tarjeta no son válidos';
+  end if;
+
+  select commission_rate into v_rate from public.platform_settings where id = 1;
+  v_rate := coalesce(v_rate, 0.10);
+  v_commission := round(v_service.price * v_rate)::int;
+  select full_name into v_client_name from public.profiles where id = v_uid;
+
+  insert into public.bookings (
+    client_id, client_name, provider_id, service_id, service_title, scheduled_at, address, lat, lng, notes,
+    price, commission_rate, commission_amount, provider_amount, card_brand, card_last4
+  ) values (
+    v_uid, coalesce(v_client_name, ''), v_provider.id, v_service.id, v_service.title, p_scheduled_at,
+    trim(p_address), p_lat, p_lng, left(coalesce(trim(p_notes), ''), 500),
+    v_service.price, v_rate, v_commission, v_service.price - v_commission,
+    coalesce(nullif(trim(p_card_brand), ''), 'Tarjeta'), p_card_last4
+  )
+  returning * into v_booking;
+
+  perform public.booking_system_message(v_uid, v_provider.id,
+    'Nueva solicitud #' || v_booking.code || ': ' || v_service.title || ' · ' ||
+    public.fmt_date(p_scheduled_at) || ' · ' || public.fmt_clp(v_service.price) ||
+    ' (pago retenido por la app)');
+
+  perform public.notify_user(v_provider.user_id, 'booking_new',
+    'Nueva solicitud de ' || coalesce(nullif(v_client_name, ''), 'un cliente'),
+    v_service.title || ' · ' || public.fmt_date(p_scheduled_at) || ' · recibirás ' ||
+    public.fmt_clp(v_booking.provider_amount),
+    '/app/reservas/' || v_booking.id);
+
+  perform public.notify_user(v_uid, 'booking_created',
+    'Solicitud enviada a ' || v_provider.display_name,
+    'Pagaste ' || public.fmt_clp(v_service.price) || '. El dinero queda retenido hasta que confirmes el trabajo.',
+    '/app/reservas/' || v_booking.id);
+
+  return v_booking;
+end $$;
+
+-- El profesional acepta o rechaza
+create or replace function public.respond_booking(p_booking_id uuid, p_accept boolean)
+returns public.bookings
+language plpgsql security definer
+set search_path = public
+as $$
+declare
+  v_b public.bookings;
+  v_p public.providers;
+begin
+  select * into v_b from public.bookings where id = p_booking_id for update;
+  if not found then
+    raise exception 'Reserva no encontrada';
+  end if;
+  select * into v_p from public.providers where id = v_b.provider_id;
+  if v_p.user_id is null or v_p.user_id <> auth.uid() then
+    raise exception 'No autorizado';
+  end if;
+  if v_b.status <> 'pending' then
+    raise exception 'Esta solicitud ya fue respondida';
+  end if;
+
+  if p_accept then
+    update public.bookings
+       set status = 'accepted', accepted_at = now(), updated_at = now()
+     where id = p_booking_id
+    returning * into v_b;
+    perform public.booking_system_message(v_b.client_id, v_b.provider_id,
+      'Solicitud #' || v_b.code || ' aceptada. Ya puedes ver el teléfono de contacto en la reserva.');
+    perform public.notify_user(v_b.client_id, 'booking_accepted',
+      v_p.display_name || ' aceptó tu solicitud',
+      v_b.service_title || ' · ' || public.fmt_date(v_b.scheduled_at),
+      '/app/reservas/' || v_b.id);
+  else
+    update public.bookings
+       set status = 'rejected', payment_status = 'refunded', cancelled_at = now(), updated_at = now()
+     where id = p_booking_id
+    returning * into v_b;
+    perform public.booking_system_message(v_b.client_id, v_b.provider_id,
+      'Solicitud #' || v_b.code || ' rechazada. Se devolvió el pago de ' || public.fmt_clp(v_b.price) || '.');
+    perform public.notify_user(v_b.client_id, 'booking_rejected',
+      v_p.display_name || ' no puede atenderte',
+      'Te devolvimos ' || public.fmt_clp(v_b.price) || '. Prueba con otro profesional cercano.',
+      '/app/reservas/' || v_b.id);
+  end if;
+  return v_b;
+end $$;
+
+-- Trabajo terminado: se libera el pago al profesional (menos la comisión)
+create or replace function public.complete_booking(p_booking_id uuid)
+returns public.bookings
+language plpgsql security definer
+set search_path = public
+as $$
+declare
+  v_uid uuid := auth.uid();
+  v_b public.bookings;
+  v_p public.providers;
+  v_is_client boolean;
+  v_is_provider boolean;
+begin
+  select * into v_b from public.bookings where id = p_booking_id for update;
+  if not found then
+    raise exception 'Reserva no encontrada';
+  end if;
+  select * into v_p from public.providers where id = v_b.provider_id;
+  v_is_client := v_b.client_id = v_uid;
+  v_is_provider := v_p.user_id is not null and v_p.user_id = v_uid;
+  if not (v_is_client or v_is_provider) then
+    raise exception 'No autorizado';
+  end if;
+  if v_b.status <> 'accepted' then
+    raise exception 'Solo se puede completar una reserva aceptada';
+  end if;
+
+  update public.bookings
+     set status = 'completed', payment_status = 'released', completed_at = now(), updated_at = now()
+   where id = p_booking_id
+  returning * into v_b;
+
+  update public.providers set jobs_count = jobs_count + 1 where id = v_b.provider_id;
+
+  perform public.booking_system_message(v_b.client_id, v_b.provider_id,
+    'Trabajo #' || v_b.code || ' completado. Pago liberado al profesional.');
+
+  perform public.notify_user(v_b.client_id, 'booking_completed',
+    'Trabajo completado', '¿Qué tal fue con ' || v_p.display_name || '? Deja tu reseña.',
+    '/app/reservas/' || v_b.id);
+
+  perform public.notify_user(v_p.user_id, 'payout',
+    'Pago liberado: ' || public.fmt_clp(v_b.provider_amount),
+    v_b.service_title || ' · comisión de la app ' || public.fmt_clp(v_b.commission_amount),
+    '/pro');
+  return v_b;
+end $$;
+
+-- El cliente cancela (reembolso completo)
+create or replace function public.cancel_booking(p_booking_id uuid)
+returns public.bookings
+language plpgsql security definer
+set search_path = public
+as $$
+declare
+  v_b public.bookings;
+  v_p public.providers;
+begin
+  select * into v_b from public.bookings where id = p_booking_id for update;
+  if not found or v_b.client_id is distinct from auth.uid() then
+    raise exception 'Reserva no encontrada';
+  end if;
+  if v_b.status not in ('pending', 'accepted') then
+    raise exception 'Esta reserva ya no se puede cancelar';
+  end if;
+  select * into v_p from public.providers where id = v_b.provider_id;
+
+  update public.bookings
+     set status = 'cancelled', payment_status = 'refunded', cancelled_at = now(), updated_at = now()
+   where id = p_booking_id
+  returning * into v_b;
+
+  perform public.booking_system_message(v_b.client_id, v_b.provider_id,
+    'Reserva #' || v_b.code || ' cancelada por el cliente. Pago devuelto.');
+  perform public.notify_user(v_p.user_id, 'booking_cancelled',
+    'Reserva cancelada', v_b.service_title || ' · ' || public.fmt_date(v_b.scheduled_at), '/pro');
+  return v_b;
+end $$;
+
+-- Reseña tras completar el trabajo
+create or replace function public.submit_review(p_booking_id uuid, p_rating int, p_comment text)
+returns public.reviews
+language plpgsql security definer
+set search_path = public
+as $$
+declare
+  v_b public.bookings;
+  v_prof public.profiles;
+  v_p public.providers;
+  v_r public.reviews;
+begin
+  select * into v_b from public.bookings where id = p_booking_id;
+  if not found or v_b.client_id is distinct from auth.uid() then
+    raise exception 'Reserva no encontrada';
+  end if;
+  if v_b.status <> 'completed' then
+    raise exception 'Solo puedes valorar trabajos completados';
+  end if;
+  if exists (select 1 from public.reviews where booking_id = p_booking_id) then
+    raise exception 'Ya valoraste este trabajo';
+  end if;
+  if p_rating is null or p_rating < 1 or p_rating > 5 then
+    raise exception 'La valoración debe ser de 1 a 5 estrellas';
+  end if;
+
+  select * into v_prof from public.profiles where id = v_b.client_id;
+  select * into v_p from public.providers where id = v_b.provider_id;
+
+  insert into public.reviews (provider_id, booking_id, client_id, author_name, author_avatar, rating, comment)
+  values (v_b.provider_id, v_b.id, v_b.client_id, coalesce(nullif(v_prof.full_name, ''), 'Cliente'),
+          v_prof.avatar_url, p_rating, left(coalesce(trim(p_comment), ''), 600))
+  returning * into v_r;
+
+  perform public.notify_user(v_p.user_id, 'review',
+    'Nueva reseña: ' || repeat('★', p_rating),
+    coalesce(nullif(left(trim(p_comment), 90), ''), 'Un cliente valoró tu trabajo.'), '/pro');
+  return v_r;
+end $$;
+
+-- Teléfono de contacto (solo con la reserva aceptada o completada)
+drop function if exists public.booking_contact(uuid);
+create or replace function public.booking_contact(p_booking_id uuid)
+returns table (name text, phone text)
+language plpgsql security definer
+set search_path = public
+as $$
+declare
+  v_uid uuid := auth.uid();
+  v_b public.bookings;
+  v_p public.providers;
+begin
+  select * into v_b from public.bookings where id = p_booking_id;
+  if not found then
+    return;
+  end if;
+  select * into v_p from public.providers where id = v_b.provider_id;
+  if v_b.status not in ('accepted', 'completed') then
+    return;
+  end if;
+  if v_b.client_id = v_uid then
+    return query
+      select v_p.display_name,
+             coalesce(nullif((select pp.phone from public.provider_private pp where pp.provider_id = v_p.id), ''),
+                      (select pr.phone from public.profiles pr where pr.id = v_p.user_id), '');
+  elsif v_p.user_id = v_uid then
+    return query
+      select coalesce(nullif(pr.full_name, ''), v_b.client_name), coalesce(pr.phone, '')
+      from public.profiles pr where pr.id = v_b.client_id;
+  end if;
+end $$;
+
+
+-- =====================================================================
+-- 5. MODO DEMO (profesionales de ejemplo que responden solos)
+-- =====================================================================
+
+-- Un profesional de ejemplo acepta la solicitud (la app lo llama a los pocos segundos)
+create or replace function public.demo_accept_booking(p_booking_id uuid)
+returns public.bookings
+language plpgsql security definer
+set search_path = public
+as $$
+declare
+  v_b public.bookings;
+  v_p public.providers;
+  v_first text;
+begin
+  select * into v_b from public.bookings where id = p_booking_id for update;
+  if not found or v_b.client_id is distinct from auth.uid() then
+    raise exception 'Reserva no encontrada';
+  end if;
+  select * into v_p from public.providers where id = v_b.provider_id;
+  if v_p.user_id is not null or not v_p.is_demo or v_b.status <> 'pending' then
+    return v_b;
+  end if;
+
+  update public.bookings
+     set status = 'accepted', accepted_at = now(), updated_at = now()
+   where id = p_booking_id
+  returning * into v_b;
+
+  v_first := split_part(trim(v_b.client_name), ' ', 1);
+
+  perform public.booking_system_message(v_b.client_id, v_b.provider_id,
+    'Solicitud #' || v_b.code || ' aceptada. Ya puedes ver el teléfono de contacto en la reserva.');
+
+  insert into public.messages (conversation_id, sender_id, sender_role, body)
+  select c.id, null, 'provider',
+         case when v_first = '' then '¡Hola!' else '¡Hola ' || initcap(v_first) || '!' end ||
+         ' Confirmado para el ' || public.fmt_date(v_b.scheduled_at) ||
+         '. Llego a la dirección que indicaste. Cualquier cosa me escribes por aquí 👍'
+  from public.conversations c
+  where c.client_id = v_b.client_id and c.provider_id = v_b.provider_id;
+
+  perform public.notify_user(v_b.client_id, 'booking_accepted',
+    v_p.display_name || ' aceptó tu solicitud',
+    v_b.service_title || ' · ' || public.fmt_date(v_b.scheduled_at),
+    '/app/reservas/' || v_b.id);
+  return v_b;
+end $$;
+
+-- Respuesta automática de un profesional de ejemplo en el chat
+create or replace function public.demo_reply(p_conversation_id uuid)
+returns void
+language plpgsql security definer
+set search_path = public
+as $$
+declare
+  v_c public.conversations;
+  v_p public.providers;
+  v_last text;
+  v_replies text[] := array[
+    '¡Hola! Sí, sin problema. ¿Te acomoda el horario que elegiste?',
+    'Perfecto, lo tengo anotado. Llevo todo lo necesario para el trabajo.',
+    'Claro que sí. Cualquier detalle extra me lo cuentas por aquí.',
+    'Genial, gracias por avisar. Te escribo cuando vaya en camino 🚗',
+    'Dale. Si prefieres otro día, puedes reservar otra hora desde mi perfil.',
+    'Sin problema, el precio incluye el traslado a tu domicilio.'
+  ];
+begin
+  select * into v_c from public.conversations where id = p_conversation_id;
+  if not found or v_c.client_id is distinct from auth.uid() then
+    return;
+  end if;
+  select * into v_p from public.providers where id = v_c.provider_id;
+  if v_p.user_id is not null or not v_p.is_demo then
+    return;
+  end if;
+  select sender_role into v_last from public.messages
+   where conversation_id = p_conversation_id order by created_at desc limit 1;
+  if v_last is distinct from 'client' then
+    return;
+  end if;
+  insert into public.messages (conversation_id, sender_id, sender_role, body)
+  values (p_conversation_id, null, 'provider', v_replies[1 + floor(random() * array_length(v_replies, 1))::int]);
+end $$;
+
+
+-- =====================================================================
+-- 6. PANEL DE NEGOCIO
+-- Métricas agregadas (sin datos personales): visibles para usuarios con sesión.
+-- Cambiar comisión o datos demo: solo administradores (profiles.is_admin).
+-- =====================================================================
+
+create or replace function public.platform_stats()
+returns json
+language plpgsql security definer
+set search_path = public
+as $$
+declare
+  v json;
+begin
+  if auth.uid() is null then
+    raise exception 'Debes iniciar sesión';
+  end if;
+
+  select json_build_object(
+    'commission_rate', (select commission_rate from public.platform_settings where id = 1),
+    'gmv', coalesce(sum(b.price) filter (where b.status in ('pending', 'accepted', 'completed')), 0),
+    'gmv_completed', coalesce(sum(b.price) filter (where b.status = 'completed'), 0),
+    'commission_earned', coalesce(sum(b.commission_amount) filter (where b.status = 'completed'), 0),
+    'commission_pending', coalesce(sum(b.commission_amount) filter (where b.status in ('pending', 'accepted')), 0),
+    'paid_to_providers', coalesce(sum(b.provider_amount) filter (where b.status = 'completed'), 0),
+    'refunded', coalesce(sum(b.price) filter (where b.payment_status = 'refunded'), 0),
+    'bookings_total', count(*),
+    'bookings_completed', count(*) filter (where b.status = 'completed'),
+    'bookings_active', count(*) filter (where b.status in ('pending', 'accepted')),
+    'bookings_cancelled', count(*) filter (where b.status in ('cancelled', 'rejected')),
+    'avg_ticket', coalesce(round(avg(b.price) filter (where b.status = 'completed')), 0),
+    'users', (select count(*) from public.profiles),
+    'providers', (select count(*) from public.providers),
+    'real_providers', (select count(*) from public.providers where user_id is not null),
+    'reviews', (select count(*) from public.reviews),
+    'by_category', coalesce((
+      select json_agg(x order by x.gmv desc) from (
+        select c.id, c.name, c.color,
+               count(bb.id) filter (where bb.status = 'completed') as bookings,
+               coalesce(sum(bb.price) filter (where bb.status = 'completed'), 0) as gmv,
+               coalesce(sum(bb.commission_amount) filter (where bb.status = 'completed'), 0) as commission
+        from public.categories c
+        left join public.providers pp on pp.category_id = c.id
+        left join public.bookings bb on bb.provider_id = pp.id
+        group by c.id, c.name, c.color
+      ) x
+    ), '[]'::json),
+    'daily', coalesce((
+      select json_agg(d order by d.day) from (
+        select to_char(g.day, 'YYYY-MM-DD') as day,
+               count(bb.id) as bookings,
+               coalesce(sum(bb.price), 0) as gmv,
+               coalesce(sum(bb.commission_amount), 0) as commission
+        from generate_series(
+               ((now() at time zone 'America/Santiago')::date - 13)::timestamp,
+               ((now() at time zone 'America/Santiago')::date)::timestamp, interval '1 day') as g(day)
+        left join public.bookings bb
+          on (bb.completed_at at time zone 'America/Santiago')::date = g.day::date
+         and bb.status = 'completed'
+        group by g.day
+      ) d
+    ), '[]'::json)
+  ) into v
+  from public.bookings b;
+
+  return v;
+end $$;
+
+create or replace function public.admin_set_commission(p_rate numeric)
+returns numeric
+language plpgsql security definer
+set search_path = public
+as $$
+begin
+  if not public.is_admin() then
+    raise exception 'Solo administradores';
+  end if;
+  if p_rate is null or p_rate < 0 or p_rate >= 0.5 then
+    raise exception 'La comisión debe estar entre 0%% y 50%%';
+  end if;
+  update public.platform_settings set commission_rate = p_rate, updated_at = now() where id = 1;
+  return p_rate;
+end $$;
+
+-- Trae al presente las reservas históricas de ejemplo (para que las gráficas se vean al día)
+create or replace function public.admin_refresh_demo()
+returns int
+language plpgsql security definer
+set search_path = public
+as $$
+declare
+  v_delta interval;
+  v_count int;
+begin
+  if not public.is_admin() then
+    raise exception 'Solo administradores';
+  end if;
+  select now() - max(completed_at) - interval '2 hours' into v_delta
+  from public.bookings where is_demo and status = 'completed';
+  if v_delta is null or v_delta < interval '1 hour' then
+    return 0;
+  end if;
+  update public.bookings
+     set scheduled_at = scheduled_at + v_delta,
+         created_at = created_at + v_delta,
+         updated_at = updated_at + v_delta,
+         accepted_at = accepted_at + v_delta,
+         completed_at = completed_at + v_delta,
+         cancelled_at = cancelled_at + v_delta
+   where is_demo;
+  get diagnostics v_count = row_count;
+  update public.posts set created_at = created_at + v_delta
+   where provider_id in (select id from public.providers where is_demo);
+  update public.reviews set created_at = created_at + v_delta
+   where booking_id is null and provider_id in (select id from public.providers where is_demo);
+  return v_count;
+end $$;
+
+-- Mueve los profesionales de ejemplo alrededor de un punto (para presentar en otra ciudad)
+create or replace function public.relocate_demo_providers(p_lat double precision, p_lng double precision)
+returns int
+language plpgsql security definer
+set search_path = public
+as $$
+declare
+  v_lat double precision;
+  v_lng double precision;
+  v_count int;
+begin
+  if not public.is_admin() then
+    raise exception 'Solo administradores';
+  end if;
+  select avg(lat), avg(lng) into v_lat, v_lng from public.providers where is_demo;
+  if v_lat is null then
+    return 0;
+  end if;
+  update public.providers
+     set lat = p_lat + (lat - v_lat),
+         lng = p_lng + (lng - v_lng)
+   where is_demo;
+  get diagnostics v_count = row_count;
+  return v_count;
+end $$;
+
+
+-- =====================================================================
+-- 7. SEGURIDAD: RLS (Row Level Security)
+-- =====================================================================
+
+alter table public.platform_settings enable row level security;
+alter table public.profiles enable row level security;
+alter table public.categories enable row level security;
+alter table public.providers enable row level security;
+alter table public.provider_private enable row level security;
+alter table public.services enable row level security;
+alter table public.posts enable row level security;
+alter table public.post_likes enable row level security;
+alter table public.favorites enable row level security;
+alter table public.bookings enable row level security;
+alter table public.reviews enable row level security;
+alter table public.conversations enable row level security;
+alter table public.messages enable row level security;
+alter table public.notifications enable row level security;
+
+-- Configuración: lectura pública
+drop policy if exists settings_read on public.platform_settings;
+create policy settings_read on public.platform_settings for select using (true);
+
+-- Perfiles: el propio + los clientes que te han escrito (si eres profesional)
+drop policy if exists profiles_select on public.profiles;
+create policy profiles_select on public.profiles for select to authenticated using (
+  id = (select auth.uid())
+  or exists (
+    select 1 from public.conversations c
+    join public.providers p on p.id = c.provider_id
+    where c.client_id = profiles.id and p.user_id = (select auth.uid())
+  )
+);
+drop policy if exists profiles_update on public.profiles;
+create policy profiles_update on public.profiles for update to authenticated
+  using (id = (select auth.uid())) with check (id = (select auth.uid()));
+
+-- Categorías, profesionales, publicaciones y reseñas: lectura pública
+drop policy if exists categories_read on public.categories;
+create policy categories_read on public.categories for select using (true);
+
+drop policy if exists providers_read on public.providers;
+create policy providers_read on public.providers for select using (true);
+drop policy if exists providers_insert on public.providers;
+create policy providers_insert on public.providers for insert to authenticated
+  with check (user_id = (select auth.uid()));
+drop policy if exists providers_update on public.providers;
+create policy providers_update on public.providers for update to authenticated
+  using (user_id = (select auth.uid())) with check (user_id = (select auth.uid()));
+
+drop policy if exists provider_private_owner on public.provider_private;
+create policy provider_private_owner on public.provider_private for all to authenticated
+  using (exists (select 1 from public.providers p where p.id = provider_id and p.user_id = (select auth.uid())))
+  with check (exists (select 1 from public.providers p where p.id = provider_id and p.user_id = (select auth.uid())));
+
+drop policy if exists services_read on public.services;
+create policy services_read on public.services for select using (
+  active or exists (select 1 from public.providers p where p.id = provider_id and p.user_id = (select auth.uid()))
+);
+drop policy if exists services_write on public.services;
+create policy services_write on public.services for all to authenticated
+  using (exists (select 1 from public.providers p where p.id = provider_id and p.user_id = (select auth.uid())))
+  with check (exists (select 1 from public.providers p where p.id = provider_id and p.user_id = (select auth.uid())));
+
+drop policy if exists posts_read on public.posts;
+create policy posts_read on public.posts for select using (true);
+drop policy if exists posts_insert on public.posts;
+create policy posts_insert on public.posts for insert to authenticated
+  with check (exists (select 1 from public.providers p where p.id = provider_id and p.user_id = (select auth.uid())));
+drop policy if exists posts_update on public.posts;
+create policy posts_update on public.posts for update to authenticated
+  using (exists (select 1 from public.providers p where p.id = provider_id and p.user_id = (select auth.uid())))
+  with check (exists (select 1 from public.providers p where p.id = provider_id and p.user_id = (select auth.uid())));
+drop policy if exists posts_delete on public.posts;
+create policy posts_delete on public.posts for delete to authenticated
+  using (exists (select 1 from public.providers p where p.id = provider_id and p.user_id = (select auth.uid())));
+
+drop policy if exists likes_read on public.post_likes;
+create policy likes_read on public.post_likes for select to authenticated using (user_id = (select auth.uid()));
+drop policy if exists likes_insert on public.post_likes;
+create policy likes_insert on public.post_likes for insert to authenticated with check (user_id = (select auth.uid()));
+drop policy if exists likes_delete on public.post_likes;
+create policy likes_delete on public.post_likes for delete to authenticated using (user_id = (select auth.uid()));
+
+drop policy if exists favorites_read on public.favorites;
+create policy favorites_read on public.favorites for select to authenticated using (user_id = (select auth.uid()));
+drop policy if exists favorites_insert on public.favorites;
+create policy favorites_insert on public.favorites for insert to authenticated with check (user_id = (select auth.uid()));
+drop policy if exists favorites_delete on public.favorites;
+create policy favorites_delete on public.favorites for delete to authenticated using (user_id = (select auth.uid()));
+
+-- Reservas: solo el cliente y el profesional. Se crean/modifican con las funciones RPC.
+drop policy if exists bookings_read on public.bookings;
+create policy bookings_read on public.bookings for select to authenticated using (
+  client_id = (select auth.uid())
+  or exists (select 1 from public.providers p where p.id = provider_id and p.user_id = (select auth.uid()))
+);
+
+drop policy if exists reviews_read on public.reviews;
+create policy reviews_read on public.reviews for select using (true);
+
+drop policy if exists conversations_read on public.conversations;
+create policy conversations_read on public.conversations for select to authenticated using (
+  client_id = (select auth.uid())
+  or exists (select 1 from public.providers p where p.id = provider_id and p.user_id = (select auth.uid()))
+);
+
+drop policy if exists messages_read on public.messages;
+create policy messages_read on public.messages for select to authenticated using (
+  exists (
+    select 1 from public.conversations c
+    where c.id = conversation_id
+      and (c.client_id = (select auth.uid())
+           or exists (select 1 from public.providers p where p.id = c.provider_id and p.user_id = (select auth.uid())))
+  )
+);
+drop policy if exists messages_insert on public.messages;
+create policy messages_insert on public.messages for insert to authenticated with check (
+  sender_id = (select auth.uid())
+  and (
+    (sender_role = 'client' and exists (
+      select 1 from public.conversations c where c.id = conversation_id and c.client_id = (select auth.uid())))
+    or (sender_role = 'provider' and exists (
+      select 1 from public.conversations c join public.providers p on p.id = c.provider_id
+      where c.id = conversation_id and p.user_id = (select auth.uid())))
+  )
+);
+
+drop policy if exists notifications_read on public.notifications;
+create policy notifications_read on public.notifications for select to authenticated
+  using (user_id = (select auth.uid()));
+drop policy if exists notifications_update on public.notifications;
+create policy notifications_update on public.notifications for update to authenticated
+  using (user_id = (select auth.uid())) with check (user_id = (select auth.uid()));
+drop policy if exists notifications_delete on public.notifications;
+create policy notifications_delete on public.notifications for delete to authenticated
+  using (user_id = (select auth.uid()));
+
+
+-- =====================================================================
+-- 8. PERMISOS (explícitos, no dependen de los permisos por defecto)
+-- =====================================================================
+
+grant usage on schema public to anon, authenticated;
+
+revoke all on all tables in schema public from anon, authenticated;
+revoke all on all functions in schema public from public, anon, authenticated;
+
+grant select on public.platform_settings, public.categories, public.providers, public.services,
+                public.posts, public.reviews to anon, authenticated;
+grant select on public.profiles, public.provider_private, public.post_likes, public.favorites,
+                public.bookings, public.conversations, public.messages, public.notifications to authenticated;
+
+grant update (full_name, avatar_url, phone, comuna) on public.profiles to authenticated;
+grant insert (user_id, category_id, display_name, headline, bio, avatar_url, cover_url, comuna, lat, lng,
+              service_radius_km, years_experience, available) on public.providers to authenticated;
+grant update (category_id, display_name, headline, bio, avatar_url, cover_url, comuna, lat, lng,
+              service_radius_km, years_experience, available) on public.providers to authenticated;
+grant insert, update on public.provider_private to authenticated;
+grant insert, update, delete on public.services to authenticated;
+grant insert, delete on public.posts to authenticated;
+grant update (caption) on public.posts to authenticated;
+grant insert, delete on public.post_likes to authenticated;
+grant insert, delete on public.favorites to authenticated;
+grant insert on public.messages to authenticated;
+grant update (read) on public.notifications to authenticated;
+grant delete on public.notifications to authenticated;
+
+grant execute on function public.norm(text) to anon, authenticated;
+grant execute on function public.fmt_clp(int) to anon, authenticated;
+grant execute on function public.fmt_date(timestamptz) to anon, authenticated;
+grant execute on function public.search_providers(double precision, double precision, text, text, text,
+                                                  double precision, numeric, boolean, int) to anon, authenticated;
+grant execute on function public.is_admin() to authenticated;
+grant execute on function public.start_conversation(uuid) to authenticated;
+grant execute on function public.mark_conversation_read(uuid) to authenticated;
+grant execute on function public.create_booking(uuid, timestamptz, text, double precision, double precision,
+                                                text, text, text) to authenticated;
+grant execute on function public.respond_booking(uuid, boolean) to authenticated;
+grant execute on function public.complete_booking(uuid) to authenticated;
+grant execute on function public.cancel_booking(uuid) to authenticated;
+grant execute on function public.submit_review(uuid, int, text) to authenticated;
+grant execute on function public.booking_contact(uuid) to authenticated;
+grant execute on function public.demo_accept_booking(uuid) to authenticated;
+grant execute on function public.demo_reply(uuid) to authenticated;
+grant execute on function public.platform_stats() to authenticated;
+grant execute on function public.admin_set_commission(numeric) to authenticated;
+grant execute on function public.admin_refresh_demo() to authenticated;
+grant execute on function public.relocate_demo_providers(double precision, double precision) to authenticated;
+
+
+-- =====================================================================
+-- 9. STORAGE (fotos de perfil y publicaciones)
+-- =====================================================================
+
+insert into storage.buckets (id, name, public)
+values ('media', 'media', true)
+on conflict (id) do update set public = true;
+
+drop policy if exists "media_insert_own_folder" on storage.objects;
+create policy "media_insert_own_folder" on storage.objects for insert to authenticated
+  with check (bucket_id = 'media' and (storage.foldername(name))[1] = (select auth.uid())::text);
+
+drop policy if exists "media_update_own_folder" on storage.objects;
+create policy "media_update_own_folder" on storage.objects for update to authenticated
+  using (bucket_id = 'media' and (storage.foldername(name))[1] = (select auth.uid())::text);
+
+drop policy if exists "media_delete_own_folder" on storage.objects;
+create policy "media_delete_own_folder" on storage.objects for delete to authenticated
+  using (bucket_id = 'media' and (storage.foldername(name))[1] = (select auth.uid())::text);
+
+
+-- =====================================================================
+-- 10. REALTIME (chat, notificaciones y reservas en vivo)
+-- =====================================================================
+
+do $$
+declare
+  t text;
+begin
+  if not exists (select 1 from pg_publication where pubname = 'supabase_realtime') then
+    create publication supabase_realtime;
+  end if;
+  foreach t in array array['messages', 'notifications', 'bookings', 'conversations'] loop
+    if not exists (
+      select 1 from pg_publication_tables
+      where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = t
+    ) then
+      execute format('alter publication supabase_realtime add table public.%I', t);
+    end if;
+  end loop;
+end $$;
+
+
+-- =====================================================================
+-- KASA · Datos de ejemplo (Santiago de Chile, precios en CLP)
+-- Generado por scripts/generate-seed.mjs. Ejecutar DESPUÉS de schema.sql.
+-- Re-ejecutable: actualiza los datos demo sin tocar a los usuarios reales.
+-- =====================================================================
+
+begin;
+
+-- Categorías
+insert into public.categories (id, name, icon, color, keywords, sort) values
+  ('jardineria', 'Jardinería', 'Sprout', '#025FFB', 'jardin jardinero jardineria pasto cesped corte poda arbol arboles riego plantas maleza paisajismo', 1),
+  ('mecanica', 'Mecánica', 'Wrench', '#FD69CF', 'mecanico mecanica auto autos carro coche aceite frenos bateria neumatico neumaticos scanner moto revision taller', 2),
+  ('barberia', 'Barbería', 'Scissors', '#081B3A', 'barbero barberia pelo corte barba fade degradado peluquero afeitado', 3),
+  ('belleza', 'Belleza', 'Sparkles', '#D1E2FF', 'manicure pedicure unas uñas maquillaje peluqueria peluquera peinado cejas pestañas estetica alisado tintura', 4),
+  ('aseo', 'Aseo', 'SprayCan', '#025FFB', 'aseo limpieza limpiar hogar departamento depto oficina ventanas alfombras sofa tapiz colchon', 5),
+  ('gasfiteria', 'Gasfitería', 'Droplets', '#FD69CF', 'gasfiter gasfiteria plomero fontanero cañeria agua fuga calefont baño llave destape wc lavamanos', 6),
+  ('electricidad', 'Electricidad', 'Zap', '#081B3A', 'electricista electricidad enchufe luz cableado tablero corto circuito lampara instalacion', 7),
+  ('maestro', 'Maestro', 'Hammer', '#D1E2FF', 'maestro arreglos reparaciones muebles armado montaje pintura pintor pieza habitacion pared repisa cuadros carpintero', 8),
+  ('mascotas', 'Mascotas', 'PawPrint', '#025FFB', 'perro perros paseo paseador gato mascota mascotas cuidado peluqueria canina', 9),
+  ('lavado', 'Lavado de autos', 'CarFront', '#FD69CF', 'lavado lavar auto autos tapiz encerado detailing pulido', 10),
+  ('cerrajeria', 'Cerrajería', 'KeyRound', '#081B3A', 'cerrajero cerrajeria llave llaves chapa cerradura puerta', 11),
+  ('tecnologia', 'Técnico PC', 'Laptop', '#D1E2FF', 'computador pc notebook celular reparacion formateo wifi internet tecnico impresora router', 12),
+  ('clases', 'Clases', 'GraduationCap', '#025FFB', 'profesor profesora clases clase particulares matematicas ingles reforzamiento paes musica guitarra', 13),
+  ('masajes', 'Masajes', 'HandHeart', '#FD69CF', 'masaje masajes masajista kinesiologo kinesiologa kine relajacion descontracturante spa', 14),
+  ('entrenador', 'Entrenador', 'Dumbbell', '#081B3A', 'entrenador entrenadora personal trainer ejercicio gym yoga funcional boxeo', 15),
+  ('fletes', 'Fletes', 'Truck', '#D1E2FF', 'flete fletes mudanza mudanzas camion camioneta traslado muebles', 16)
+on conflict (id) do update set name = excluded.name, icon = excluded.icon, color = excluded.color,
+  keywords = excluded.keywords, sort = excluded.sort;
+
+-- Profesionales de ejemplo (user_id = null → responden solos en modo demo)
+insert into public.providers (id, user_id, category_id, display_name, headline, bio, avatar_url, cover_url, comuna, lat, lng,
+  service_radius_km, years_experience, available, verified, is_demo, response_minutes) values
+  ('5d71952f-95de-4168-83ea-43094b25a1cb', null, 'jardineria', 'Jardines Don Pedro', 'Corte de pasto y mantención de jardines', 'Más de 15 años cuidando jardines en el oriente de Santiago. Llevo cortadora, orilladora y me llevo los residuos.', 'https://randomuser.me/api/portraits/men/53.jpg', 'https://images.unsplash.com/photo-1622383563227-04401ab4e5ea', 'La Reina', -33.438179, -70.542885, 20, 18, false, true, true, 15),
+  ('97dd5002-e9b3-49ed-982c-1f32046cbff7', null, 'jardineria', 'Verde Vivo', 'Paisajismo y poda con herramientas propias', 'Técnica agrícola. Diseño jardines de bajo consumo de agua y hago poda de arbustos y árboles pequeños.', 'https://randomuser.me/api/portraits/women/14.jpg', 'https://images.unsplash.com/photo-1617576683096-00fc8eecb3af', 'Las Condes', -33.409292, -70.566634, 12, 2, true, true, true, 45),
+  ('7197e33c-da06-4cff-a0ef-ee2dc7245e42', null, 'jardineria', 'Luis Jardinero', 'Corte de pasto rápido y a precio justo', 'Corte de pasto, limpieza de maleza y riego. Atiendo Maipú, Cerrillos y Estación Central.', 'https://randomuser.me/api/portraits/men/29.jpg', 'https://images.unsplash.com/photo-1601001815894-4bb6c81416d7', 'Maipú', -33.508772, -70.749491, 12, 16, true, true, true, 20),
+  ('d9c1a3d8-172c-4c9f-8188-2d9ce7a53bf9', null, 'mecanica', 'Mecánico a Domicilio Carlos', 'Cambio de aceite y frenos en tu casa', 'Mecánico automotriz titulado. Voy a tu casa o trabajo con todo el equipo. Uso repuestos originales o alternativos, tú eliges.', 'https://randomuser.me/api/portraits/men/27.jpg', 'https://images.unsplash.com/photo-1619642751034-765dfdf7c58e', 'Ñuñoa', -33.463325, -70.606249, 8, 16, true, true, true, 15),
+  ('4c27a439-86ff-4d62-9263-2e766ca3c848', null, 'mecanica', 'AutoFix Móvil', 'Diagnóstico con scanner y mantenciones', 'Scanner multimarca para detectar fallas en el momento. Mantenciones por kilometraje sin ir al taller.', 'https://randomuser.me/api/portraits/men/7.jpg', 'https://images.unsplash.com/photo-1642075223291-f9ec545889fa', 'Providencia', -33.433492, -70.600828, 5, 7, true, true, true, 20),
+  ('6c027df6-274d-44e2-9b43-fb580d738756', null, 'mecanica', 'Taller Móvil Rivas', 'Mecánica general y baterías', 'Cambio de baterías, alternadores y arranques. Si tu auto no parte, voy a buscarte.', 'https://randomuser.me/api/portraits/men/38.jpg', 'https://images.unsplash.com/photo-1625047509248-ec889cbff17f', 'La Florida', -33.519273, -70.603759, 20, 8, true, true, true, 30),
+  ('d7665b14-0cca-458a-bd35-94e7aa5dc48f', null, 'barberia', 'Barber Nico', 'Barbero a domicilio · fades y barba', 'Barbero con 8 años de experiencia. Llevo sillón plegable, capa y todo desinfectado. Fades, tijera y barba con toalla caliente.', 'https://randomuser.me/api/portraits/men/63.jpg', 'https://images.unsplash.com/photo-1593702275687-f8b402bf1fb5', 'Santiago Centro', -33.443771, -70.648682, 5, 18, true, true, true, 8),
+  ('eaf1c674-7440-4b31-a730-3bac63afcd67', null, 'barberia', 'The Home Barber', 'Cortes clásicos y modernos en tu casa', 'Ideal para oficinas y eventos. Cortes clásicos, texturizados y afeitado tradicional.', 'https://randomuser.me/api/portraits/men/59.jpg', 'https://images.unsplash.com/photo-1647140655214-e4a2d914971f', 'Vitacura', -33.390624, -70.581539, 12, 11, true, false, true, 8),
+  ('6440560d-e728-4a57-846d-274d5df9de11', null, 'barberia', 'Kevin Cuts', 'Degradados y diseños · también niños', 'Especialista en degradados y diseños. Paciencia con los más pequeños.', 'https://randomuser.me/api/portraits/men/79.jpg', 'https://images.unsplash.com/photo-1517832606299-7ae9b720a186', 'San Miguel', -33.50112, -70.645451, 8, 6, true, false, true, 30),
+  ('30b96d13-d742-4d87-a8c2-8b57d556fd4d', null, 'belleza', 'Nails by Fran', 'Manicure y pedicure semipermanente', 'Manicurista certificada. Esmaltado semipermanente, kapping y nail art. Materiales esterilizados.', 'https://randomuser.me/api/portraits/women/48.jpg', 'https://images.unsplash.com/photo-1519014816548-bf5fe059798b', 'Providencia', -33.432939, -70.615963, 5, 21, true, true, true, 5),
+  ('510722d6-14c0-4a53-be41-04f809905d8f', null, 'belleza', 'Glam en Casa', 'Maquillaje y peinados para eventos', 'Maquilladora profesional para matrimonios, graduaciones y sesiones de fotos. Voy donde te arregles.', 'https://randomuser.me/api/portraits/women/49.jpg', 'https://images.unsplash.com/photo-1754799670312-8e7da8e40ad7', 'Las Condes', -33.412645, -70.568245, 5, 20, true, true, true, 15),
+  ('a126a1a2-e8e0-40e6-8709-31a593bd54c4', null, 'belleza', 'Estética Javi', 'Pestañas, cejas y uñas a domicilio', 'Lifting de pestañas, perfilado de cejas y uñas. Atención cálida y puntual.', 'https://randomuser.me/api/portraits/women/55.jpg', 'https://images.unsplash.com/photo-1562322140-8baeececf3df', 'Ñuñoa', -33.452866, -70.603691, 5, 2, true, true, true, 30),
+  ('04a03d6c-390d-412f-9b8b-e1b0fc84184c', null, 'aseo', 'Brillo Total', 'Aseo profundo de casas y departamentos', 'Equipo de 2 personas con productos incluidos. Aseo profundo, post mudanza y post obra.', 'https://randomuser.me/api/portraits/women/6.jpg', 'https://images.unsplash.com/photo-1585421514284-efb74c2b69ba', 'Las Condes', -33.41927, -70.560693, 5, 17, true, false, true, 10),
+  ('6d90ed63-a3f1-4ad7-b7df-11bbefdd808d', null, 'aseo', 'Limpieza Rosa', 'Aseo general por horas', 'Aseo general, planchado y orden. Referencias de clientes de hace años.', 'https://randomuser.me/api/portraits/women/60.jpg', 'https://images.unsplash.com/photo-1713110824336-f78c320dcf8e', 'Estación Central', -33.457348, -70.701642, 5, 17, true, true, true, 30),
+  ('bc5d2e20-ff73-4cd3-a8a9-394d8b797600', null, 'aseo', 'Sofá Limpio', 'Limpieza de sofás, alfombras y colchones', 'Lavado de tapiz con máquina de inyección-extracción. Secado rápido.', 'https://randomuser.me/api/portraits/men/88.jpg', 'https://images.unsplash.com/photo-1581578731548-c64695cc6952', 'Macul', -33.487536, -70.606894, 10, 22, true, true, true, 8),
+  ('89a16328-c475-4c8f-9ed4-984459932f65', null, 'gasfiteria', 'Gásfiter Manuel', 'Fugas, destapes y calefont', 'Gásfiter con certificación SEC. Reparación de fugas, destapes y mantención de calefont.', 'https://randomuser.me/api/portraits/men/13.jpg', 'https://images.unsplash.com/photo-1676210134188-4c05dd172f89', 'Santiago Centro', -33.434341, -70.647704, 5, 7, true, false, true, 5),
+  ('3d53da8f-5814-4897-8d69-cdbe8187429a', null, 'gasfiteria', 'AquaFix', 'Gasfitería certificada SEC', 'Instalación de griferías, sanitarios y termos. Trabajo garantizado por 3 meses.', 'https://randomuser.me/api/portraits/men/10.jpg', 'https://images.unsplash.com/photo-1596394723269-b2cbca4e6313', 'Providencia', -33.425931, -70.60547, 8, 2, true, false, true, 10),
+  ('89df9695-6006-4ccd-883a-83660f5144dd', null, 'gasfiteria', 'Don Raúl Gásfiter', 'Urgencias de gasfitería', 'Atiendo urgencias en Puente Alto, La Florida y La Pintana.', 'https://randomuser.me/api/portraits/men/89.jpg', 'https://images.unsplash.com/photo-1676210134188-4c05dd172f89', 'Puente Alto', -33.614598, -70.567939, 5, 12, true, true, true, 20),
+  ('3306e833-91f6-43a3-95e2-cd2c087c46d6', null, 'electricidad', 'Electro Sebastián', 'Electricista certificado SEC', 'Instalaciones eléctricas, tableros y certificación TE1. Trabajo limpio y ordenado.', 'https://randomuser.me/api/portraits/men/87.jpg', 'https://images.unsplash.com/photo-1758101755915-462eddc23f57', 'Ñuñoa', -33.461528, -70.60329, 12, 16, true, false, true, 15),
+  ('3324e783-baf5-43f1-bab8-4de6d46700f4', null, 'electricidad', 'Luz y Fuerza', 'Instalaciones y tableros eléctricos', 'Ampliaciones eléctricas, cambio de automáticos y diferenciales.', 'https://randomuser.me/api/portraits/men/61.jpg', 'https://images.unsplash.com/photo-1635335874521-7987db781153', 'Maipú', -33.517474, -70.755211, 12, 7, false, true, true, 15),
+  ('72b1d28e-1dab-4ce2-917d-655bcde14e1a', null, 'electricidad', 'Tomás Electricista', 'Enchufes, lámparas y cortocircuitos', 'Arreglo cortocircuitos e instalo lámparas, enchufes y focos LED.', 'https://randomuser.me/api/portraits/men/18.jpg', 'https://images.unsplash.com/photo-1601462904263-f2fa0c851cb9', 'Recoleta', -33.413266, -70.63529, 15, 12, true, false, true, 10),
+  ('9ee75154-bc6c-4804-8b83-35eb90542227', null, 'maestro', 'Maestro Hugo', 'Arreglos del hogar y armado de muebles', 'Armo muebles de cualquier tienda, instalo repisas, cortinas y cuadros.', 'https://randomuser.me/api/portraits/men/16.jpg', 'https://images.unsplash.com/photo-1505798577917-a65157d3320a', 'La Florida', -33.52953, -70.591433, 8, 3, true, true, true, 45),
+  ('433c2e40-5e69-4a36-96ca-b2ad28555751', null, 'maestro', 'Pinturas Benja', 'Pintura interior y exterior', 'Pintura de departamentos y casas con terminaciones prolijas. Presupuesto sin costo.', 'https://randomuser.me/api/portraits/men/17.jpg', 'https://images.unsplash.com/photo-1615974679600-665fb9468c4f', 'Peñalolén', -33.492028, -70.547341, 20, 19, true, true, true, 30),
+  ('40f848b1-1350-4629-8a6d-cb12028a92a5', null, 'maestro', 'Todo Arreglo', 'Maestro multiuso de confianza', 'Pequeñas reparaciones: puertas, bisagras, cerámica y sellos.', 'https://randomuser.me/api/portraits/men/51.jpg', 'https://images.unsplash.com/photo-1505798577917-a65157d3320a', 'Independencia', -33.411988, -70.6634, 15, 8, true, true, true, 10),
+  ('2212694b-5386-4035-a407-56bd97c88898', null, 'mascotas', 'Paseos Sofi', 'Paseo y cuidado de perros', 'Amo los perros. Paseos de 1 hora en grupos pequeños y fotos del paseo por el chat.', 'https://randomuser.me/api/portraits/women/57.jpg', 'https://images.unsplash.com/photo-1530700131180-d43d9b8cc41f', 'Providencia', -33.432918, -70.611984, 10, 19, true, true, true, 8),
+  ('56a6fe01-d0e1-4082-acbe-cff62e37a1ee', null, 'mascotas', 'Huellitas', 'Paseador de perros con experiencia', 'Estudiante de veterinaria. Paseos, alimentación y cuidado cuando viajas.', 'https://randomuser.me/api/portraits/men/12.jpg', 'https://images.unsplash.com/photo-1569992274375-e56b14e234f1', 'Ñuñoa', -33.461126, -70.603472, 10, 5, true, false, true, 15),
+  ('04a74629-0705-47e5-9a10-aca554f5f1eb', null, 'mascotas', 'Peluquería Canina Móvil', 'Baño y corte canino a domicilio', 'Baño, corte y corte de uñas sin estrés para tu mascota.', 'https://randomuser.me/api/portraits/women/39.jpg', 'https://images.unsplash.com/photo-1601758176481-e81a6b713126', 'Las Condes', -33.420016, -70.572975, 10, 13, true, true, true, 8),
+  ('022988b6-9151-4b81-b793-4b6fcf8cf948', null, 'lavado', 'Lava Car Móvil', 'Lavado ecológico a domicilio', 'Lavado sin manguera con productos biodegradables. Tu auto limpio mientras trabajas.', 'https://randomuser.me/api/portraits/men/90.jpg', 'https://images.unsplash.com/photo-1608506375591-b90e1f955e4b', 'Vitacura', -33.393637, -70.577185, 5, 4, true, false, true, 5),
+  ('5ecf1516-e771-422b-a212-460b401d2ace', null, 'lavado', 'Detailing Pro', 'Pulido, encerado y tapiz', 'Detailing completo: pulido de pintura, encerado cerámico y limpieza de tapiz.', 'https://randomuser.me/api/portraits/men/25.jpg', 'https://images.unsplash.com/photo-1732357624591-f2137085659b', 'Lo Barnechea', -33.359803, -70.512592, 5, 21, false, true, true, 10),
+  ('fdca69b1-6cf6-4837-9d55-8dc3b2d31058', null, 'lavado', 'AutoSpa Express', 'Lavado completo en 1 hora', 'Lavado exterior e interior con aspirado. Precios especiales para flotas.', 'https://randomuser.me/api/portraits/men/81.jpg', 'https://images.unsplash.com/photo-1608506375591-b90e1f955e4b', 'San Joaquín', -33.503012, -70.636157, 8, 17, true, false, true, 20),
+  ('405c4cd2-0edd-4f15-8e5c-b5257cd00bfe', null, 'cerrajeria', 'Cerrajería Rápida', 'Aperturas en 30 minutos', 'Apertura de puertas sin daño, cambio de cilindros y chapas de seguridad.', 'https://randomuser.me/api/portraits/men/3.jpg', 'https://images.unsplash.com/photo-1588689653688-9b312cd6bc2b', 'Santiago Centro', -33.435073, -70.653122, 15, 17, true, true, true, 15),
+  ('e98639c7-d4ca-48a6-a6ee-63cfb4d6cdee', null, 'cerrajeria', 'Llaves Don Óscar', 'Cambio de chapas y copias de llaves', 'Cerrajero con 20 años de oficio. Copias de llaves y chapas a domicilio.', 'https://randomuser.me/api/portraits/men/68.jpg', 'https://images.unsplash.com/photo-1592744254966-58c65cfd2e69', 'Ñuñoa', -33.464598, -70.597, 8, 5, true, true, true, 20),
+  ('04668b65-f1f1-4c55-8331-2629af38bf28', null, 'cerrajeria', 'Cerrajero 24/7', 'Urgencias de día y de noche', 'Atiendo urgencias todos los días, incluidos festivos.', 'https://randomuser.me/api/portraits/men/78.jpg', 'https://images.unsplash.com/photo-1588689653688-9b312cd6bc2b', 'Quinta Normal', -33.421948, -70.705299, 15, 19, true, true, true, 45),
+  ('71bfbbbc-8ffa-40d6-9c39-7105ffe3e1e5', null, 'tecnologia', 'TecnoAyuda', 'Formateo, virus y respaldo', 'Ingeniero en informática. Formateo, respaldo de fotos y limpieza de virus.', 'https://randomuser.me/api/portraits/men/54.jpg', 'https://images.unsplash.com/photo-1562408590-e32931084e23', 'Providencia', -33.433552, -70.608534, 15, 21, false, false, true, 20),
+  ('50ce16fb-2799-4d43-ae2d-a5967f81f013', null, 'tecnologia', 'Fix My Laptop', 'Reparación de notebooks y celulares', 'Cambio de pantallas, baterías y teclados. Diagnóstico en tu casa.', 'https://randomuser.me/api/portraits/women/26.jpg', 'https://images.unsplash.com/photo-1721332154191-ba5f1534266e', 'Santiago Centro', -33.439942, -70.646407, 20, 8, true, true, true, 10),
+  ('e34112bf-6af0-4c47-8603-c942f221b1d4', null, 'tecnologia', 'Redes Hogar', 'Wifi, routers y casa inteligente', 'Mejoro la señal wifi de tu casa e instalo cámaras y domótica.', 'https://randomuser.me/api/portraits/men/50.jpg', 'https://images.unsplash.com/photo-1517430816045-df4b7de11d1d', 'Las Condes', -33.408228, -70.565898, 5, 7, true, true, true, 20),
+  ('89dbd0a8-7a51-4002-bbb7-ad99a708f5cf', null, 'clases', 'Profe Catalina', 'Matemáticas y preparación PAES', 'Profesora de matemáticas. Reforzamiento escolar y preparación PAES con ensayos.', 'https://randomuser.me/api/portraits/women/84.jpg', 'https://images.unsplash.com/photo-1589206946274-929e4da3996b', 'Ñuñoa', -33.461139, -70.604, 12, 5, true, true, true, 45),
+  ('0324286d-e54f-45e7-899c-a903fe574d0d', null, 'clases', 'English with Sam', 'Inglés conversacional', 'Viví 5 años en Canadá. Clases conversacionales para trabajo y viajes.', 'https://randomuser.me/api/portraits/men/14.jpg', 'https://images.unsplash.com/photo-1628752230455-63d6daa51e53', 'Providencia', -33.427089, -70.60384, 15, 2, true, true, true, 5),
+  ('a9253c5b-225d-460c-99a5-00f50503d68e', null, 'clases', 'Guitarra con Pablo', 'Clases de guitarra para todas las edades', 'Músico titulado. Aprende tus canciones favoritas desde la primera clase.', 'https://randomuser.me/api/portraits/men/2.jpg', 'https://images.unsplash.com/photo-1589206946274-929e4da3996b', 'La Reina', -33.451758, -70.542372, 20, 3, false, true, true, 45),
+  ('45a9c520-9302-4711-8105-a1c34a03d3d5', null, 'masajes', 'Relax Home Spa', 'Masajes descontracturantes a domicilio', 'Llevo camilla, aceites y música. Masaje descontracturante, relajante y piedras calientes.', 'https://randomuser.me/api/portraits/women/5.jpg', 'https://images.unsplash.com/photo-1745327883508-b6cd32e5dde5', 'Vitacura', -33.386621, -70.581713, 15, 22, false, false, true, 8),
+  ('004d8d8b-bde9-4d79-b8b0-043cebeb3b19', null, 'masajes', 'Kine en Casa', 'Kinesióloga · rehabilitación y masajes', 'Kinesióloga titulada. Rehabilitación de lesiones y adulto mayor a domicilio.', 'https://randomuser.me/api/portraits/women/71.jpg', 'https://images.unsplash.com/photo-1649751361457-01d3a696c7e6', 'Providencia', -33.438359, -70.61724, 8, 10, true, true, true, 20),
+  ('e8db3107-9731-426a-95c8-b7b209fda5df', null, 'masajes', 'Manos Sanadoras', 'Masaje relajante y reflexología', 'Terapeuta holística. Masaje relajante, reflexología y drenaje linfático.', 'https://randomuser.me/api/portraits/women/58.jpg', 'https://images.unsplash.com/photo-1544161515-4ab6ce6db874', 'Macul', -33.485263, -70.60594, 5, 15, true, true, true, 8),
+  ('e93239c1-2cbc-4c1c-8806-9ce82065a391', null, 'entrenador', 'Coach Ale', 'Entrenamiento funcional en casa', 'Preparador físico. Planes para bajar de peso y ganar fuerza sin ir al gimnasio.', 'https://randomuser.me/api/portraits/men/55.jpg', 'https://images.unsplash.com/photo-1571019614242-c5c5dee9f50b', 'Las Condes', -33.407496, -70.560472, 15, 21, true, true, true, 45),
+  ('384f9f55-6774-47b8-bda5-60b2e5de04d3', null, 'entrenador', 'Fit con Ignacia', 'Entrenadora personal y yoga', 'Entrenamiento personalizado y clases de yoga para principiantes.', 'https://randomuser.me/api/portraits/women/50.jpg', 'https://images.unsplash.com/photo-1540206276207-3af25c08abc4', 'Ñuñoa', -33.45971, -70.592723, 5, 5, false, true, true, 20),
+  ('91a90c87-f01b-4b22-b9bd-810c3d9d4a8e', null, 'entrenador', 'Box Training', 'Boxeo y acondicionamiento físico', 'Ex boxeador amateur. Clases de boxeo recreativo y cardio.', 'https://randomuser.me/api/portraits/men/82.jpg', 'https://images.unsplash.com/photo-1738523686534-7055df5858d6', 'San Miguel', -33.490697, -70.655783, 5, 7, false, true, true, 30),
+  ('cf7a1244-29c8-47e2-897c-47404773c041', null, 'fletes', 'Fletes Ramírez', 'Fletes y mudanzas pequeñas', 'Camioneta cerrada y ayudante. Fletes dentro de Santiago.', 'https://randomuser.me/api/portraits/men/71.jpg', 'https://images.unsplash.com/photo-1605705658744-45f0fe8f9663', 'Maipú', -33.503721, -70.752701, 12, 6, true, true, true, 8),
+  ('84dbb6b8-354c-4d2b-af7e-6ed591ccccdf', null, 'fletes', 'Mudanzas Express', 'Mudanzas completas con embalaje', 'Camión 3/4, embalaje y armado de muebles incluidos.', 'https://randomuser.me/api/portraits/men/66.jpg', 'https://images.unsplash.com/photo-1586781383963-8e66f88077ec', 'La Florida', -33.524514, -70.603744, 12, 2, true, true, true, 5),
+  ('038dc3e5-a685-4217-a4ac-f8381db74622', null, 'fletes', 'Flete Ya', 'Camioneta disponible hoy', 'Retiro compras de tiendas y traslado electrodomésticos el mismo día.', 'https://randomuser.me/api/portraits/men/75.jpg', 'https://images.unsplash.com/photo-1592838064575-70ed626d3a0e', 'Recoleta', -33.412776, -70.634808, 15, 16, true, false, true, 45)
+on conflict (id) do update set category_id = excluded.category_id, display_name = excluded.display_name,
+  headline = excluded.headline, bio = excluded.bio, avatar_url = excluded.avatar_url, cover_url = excluded.cover_url,
+  comuna = excluded.comuna, lat = excluded.lat, lng = excluded.lng, service_radius_km = excluded.service_radius_km,
+  years_experience = excluded.years_experience, available = excluded.available, verified = excluded.verified,
+  is_demo = true, response_minutes = excluded.response_minutes;
+
+insert into public.provider_private (provider_id, phone) values
+  ('5d71952f-95de-4168-83ea-43094b25a1cb', '+56 9 8984 9223'),
+  ('97dd5002-e9b3-49ed-982c-1f32046cbff7', '+56 9 5994 9738'),
+  ('7197e33c-da06-4cff-a0ef-ee2dc7245e42', '+56 9 7783 5049'),
+  ('d9c1a3d8-172c-4c9f-8188-2d9ce7a53bf9', '+56 9 5447 4132'),
+  ('4c27a439-86ff-4d62-9263-2e766ca3c848', '+56 9 6392 6198'),
+  ('6c027df6-274d-44e2-9b43-fb580d738756', '+56 9 5125 9289'),
+  ('d7665b14-0cca-458a-bd35-94e7aa5dc48f', '+56 9 8508 4153'),
+  ('eaf1c674-7440-4b31-a730-3bac63afcd67', '+56 9 8837 1802'),
+  ('6440560d-e728-4a57-846d-274d5df9de11', '+56 9 9536 3273'),
+  ('30b96d13-d742-4d87-a8c2-8b57d556fd4d', '+56 9 6356 7837'),
+  ('510722d6-14c0-4a53-be41-04f809905d8f', '+56 9 5964 6472'),
+  ('a126a1a2-e8e0-40e6-8709-31a593bd54c4', '+56 9 5858 1178'),
+  ('04a03d6c-390d-412f-9b8b-e1b0fc84184c', '+56 9 7270 2603'),
+  ('6d90ed63-a3f1-4ad7-b7df-11bbefdd808d', '+56 9 5697 5393'),
+  ('bc5d2e20-ff73-4cd3-a8a9-394d8b797600', '+56 9 9422 1425'),
+  ('89a16328-c475-4c8f-9ed4-984459932f65', '+56 9 7622 7543'),
+  ('3d53da8f-5814-4897-8d69-cdbe8187429a', '+56 9 9891 3342'),
+  ('89df9695-6006-4ccd-883a-83660f5144dd', '+56 9 5602 4431'),
+  ('3306e833-91f6-43a3-95e2-cd2c087c46d6', '+56 9 9999 3647'),
+  ('3324e783-baf5-43f1-bab8-4de6d46700f4', '+56 9 9012 4900'),
+  ('72b1d28e-1dab-4ce2-917d-655bcde14e1a', '+56 9 6237 6676'),
+  ('9ee75154-bc6c-4804-8b83-35eb90542227', '+56 9 5147 8989'),
+  ('433c2e40-5e69-4a36-96ca-b2ad28555751', '+56 9 9521 3550'),
+  ('40f848b1-1350-4629-8a6d-cb12028a92a5', '+56 9 7354 9554'),
+  ('2212694b-5386-4035-a407-56bd97c88898', '+56 9 9584 4298'),
+  ('56a6fe01-d0e1-4082-acbe-cff62e37a1ee', '+56 9 9484 2104'),
+  ('04a74629-0705-47e5-9a10-aca554f5f1eb', '+56 9 9943 6088'),
+  ('022988b6-9151-4b81-b793-4b6fcf8cf948', '+56 9 7674 5188'),
+  ('5ecf1516-e771-422b-a212-460b401d2ace', '+56 9 6463 3833'),
+  ('fdca69b1-6cf6-4837-9d55-8dc3b2d31058', '+56 9 7039 9011'),
+  ('405c4cd2-0edd-4f15-8e5c-b5257cd00bfe', '+56 9 9379 2541'),
+  ('e98639c7-d4ca-48a6-a6ee-63cfb4d6cdee', '+56 9 8558 8026'),
+  ('04668b65-f1f1-4c55-8331-2629af38bf28', '+56 9 5128 8956'),
+  ('71bfbbbc-8ffa-40d6-9c39-7105ffe3e1e5', '+56 9 9029 7850'),
+  ('50ce16fb-2799-4d43-ae2d-a5967f81f013', '+56 9 7784 1020'),
+  ('e34112bf-6af0-4c47-8603-c942f221b1d4', '+56 9 6385 9416'),
+  ('89dbd0a8-7a51-4002-bbb7-ad99a708f5cf', '+56 9 9376 2117'),
+  ('0324286d-e54f-45e7-899c-a903fe574d0d', '+56 9 7812 5009'),
+  ('a9253c5b-225d-460c-99a5-00f50503d68e', '+56 9 9992 9796'),
+  ('45a9c520-9302-4711-8105-a1c34a03d3d5', '+56 9 8933 6467'),
+  ('004d8d8b-bde9-4d79-b8b0-043cebeb3b19', '+56 9 7006 4742'),
+  ('e8db3107-9731-426a-95c8-b7b209fda5df', '+56 9 5738 5967'),
+  ('e93239c1-2cbc-4c1c-8806-9ce82065a391', '+56 9 5957 3008'),
+  ('384f9f55-6774-47b8-bda5-60b2e5de04d3', '+56 9 9717 7248'),
+  ('91a90c87-f01b-4b22-b9bd-810c3d9d4a8e', '+56 9 9317 6717'),
+  ('cf7a1244-29c8-47e2-897c-47404773c041', '+56 9 9132 2650'),
+  ('84dbb6b8-354c-4d2b-af7e-6ed591ccccdf', '+56 9 8434 8102'),
+  ('038dc3e5-a685-4217-a4ac-f8381db74622', '+56 9 8124 1947')
+on conflict (provider_id) do update set phone = excluded.phone;
+
+-- Servicios
+insert into public.services (id, provider_id, title, description, price, duration_min) values
+  ('f999cd4a-58d7-47da-bce6-1a5f9830a49a', '5d71952f-95de-4168-83ea-43094b25a1cb', 'Limpieza de maleza', 'Desmalezado y limpieza de platabandas.', 22000, 120),
+  ('b16408d2-d72f-460a-9ec2-d7ded5ebb570', '5d71952f-95de-4168-83ea-43094b25a1cb', 'Poda de arbustos', 'Poda y formación de arbustos y cercos.', 22500, 120),
+  ('6bc696f2-058b-46b2-96cb-eb124a4f55a4', '5d71952f-95de-4168-83ea-43094b25a1cb', 'Mantención mensual de jardín', '4 visitas al mes: corte, poda y riego.', 64000, 240),
+  ('0e71f646-8995-4ee8-8e26-0be37cc16f03', '5d71952f-95de-4168-83ea-43094b25a1cb', 'Corte de pasto (hasta 100 m²)', 'Corte, orillado y retiro de residuos.', 16500, 90),
+  ('142fe6e1-e8fc-467d-afb3-75f4f463aa35', '97dd5002-e9b3-49ed-982c-1f32046cbff7', 'Limpieza de maleza', 'Desmalezado y limpieza de platabandas.', 21000, 120),
+  ('b89d7d39-fba8-47bc-a048-617151a26913', '97dd5002-e9b3-49ed-982c-1f32046cbff7', 'Corte de pasto (hasta 100 m²)', 'Corte, orillado y retiro de residuos.', 19000, 90),
+  ('7fe38627-b06c-4c69-947c-c3ff08da052b', '97dd5002-e9b3-49ed-982c-1f32046cbff7', 'Poda de arbustos', 'Poda y formación de arbustos y cercos.', 23000, 120),
+  ('e0e58688-261d-441f-b599-7dfc2645bd45', '97dd5002-e9b3-49ed-982c-1f32046cbff7', 'Mantención mensual de jardín', '4 visitas al mes: corte, poda y riego.', 54000, 240),
+  ('9b013682-530f-4d31-8cc1-aabbcadd845b', '7197e33c-da06-4cff-a0ef-ee2dc7245e42', 'Corte de pasto (hasta 100 m²)', 'Corte, orillado y retiro de residuos.', 17500, 90),
+  ('1403b188-1e6d-4e3f-b42f-3f1c211fec1c', '7197e33c-da06-4cff-a0ef-ee2dc7245e42', 'Limpieza de maleza', 'Desmalezado y limpieza de platabandas.', 21500, 120),
+  ('56a9fd45-0440-4a88-bbe2-7ce921f0255e', '7197e33c-da06-4cff-a0ef-ee2dc7245e42', 'Poda de arbustos', 'Poda y formación de arbustos y cercos.', 25000, 120),
+  ('0588fc48-ed86-4bd2-a071-ac1bcfcac0f1', '7197e33c-da06-4cff-a0ef-ee2dc7245e42', 'Mantención mensual de jardín', '4 visitas al mes: corte, poda y riego.', 64500, 240),
+  ('48a084a4-f1fa-4357-a835-70e2aff40560', 'd9c1a3d8-172c-4c9f-8188-2d9ce7a53bf9', 'Cambio de batería', 'Instalación y prueba del sistema de carga.', 14000, 30),
+  ('5c5cceb4-3f4e-4041-bca6-86bd69aa97fc', 'd9c1a3d8-172c-4c9f-8188-2d9ce7a53bf9', 'Diagnóstico con scanner', 'Lectura de fallas y borrado de códigos.', 17000, 45),
+  ('e63cd81f-3dbb-4331-a0c9-74d5f8063224', 'd9c1a3d8-172c-4c9f-8188-2d9ce7a53bf9', 'Cambio de pastillas de freno', 'Mano de obra por eje. Repuestos aparte.', 34500, 90),
+  ('cdc90ab9-7486-4b07-ae20-d2d490b69bbc', 'd9c1a3d8-172c-4c9f-8188-2d9ce7a53bf9', 'Cambio de aceite y filtro a domicilio', 'Incluye 4 litros de aceite sintético y filtro.', 43000, 60),
+  ('00539e36-a0e9-4f9b-9fb0-c43392e4c0ff', '4c27a439-86ff-4d62-9263-2e766ca3c848', 'Cambio de pastillas de freno', 'Mano de obra por eje. Repuestos aparte.', 37000, 90),
+  ('08f16c76-3014-4c37-9d1a-bdccb46ca5b9', '4c27a439-86ff-4d62-9263-2e766ca3c848', 'Cambio de aceite y filtro a domicilio', 'Incluye 4 litros de aceite sintético y filtro.', 51000, 60),
+  ('2744fd50-fc35-4677-86b8-2cd0521b721d', '4c27a439-86ff-4d62-9263-2e766ca3c848', 'Diagnóstico con scanner', 'Lectura de fallas y borrado de códigos.', 18000, 45),
+  ('46a4e83f-36af-4c67-aa63-e6b223d897ed', '4c27a439-86ff-4d62-9263-2e766ca3c848', 'Cambio de batería', 'Instalación y prueba del sistema de carga.', 15500, 30),
+  ('40b2036a-cd6d-41bc-8a11-7d9eccaf0ae9', '6c027df6-274d-44e2-9b43-fb580d738756', 'Cambio de batería', 'Instalación y prueba del sistema de carga.', 15000, 30),
+  ('29c3b741-77b6-454e-8325-3af5a490df0e', '6c027df6-274d-44e2-9b43-fb580d738756', 'Cambio de pastillas de freno', 'Mano de obra por eje. Repuestos aparte.', 42500, 90),
+  ('bd404ecc-b4f8-4094-9285-68a6e9745976', '6c027df6-274d-44e2-9b43-fb580d738756', 'Diagnóstico con scanner', 'Lectura de fallas y borrado de códigos.', 17000, 45),
+  ('a967a284-0373-4e38-96ac-69678ff4d73c', 'd7665b14-0cca-458a-bd35-94e7aa5dc48f', 'Corte a domicilio', 'Corte con máquina y tijera, lavado incluido.', 12500, 45),
+  ('069b4d1e-5832-4a71-b402-6a4a3d7acbe9', 'd7665b14-0cca-458a-bd35-94e7aa5dc48f', 'Perfilado de barba', 'Perfilado, navaja y bálsamo.', 7000, 25),
+  ('492885ac-fb5e-4e08-8c63-7d02ff06d1f7', 'eaf1c674-7440-4b31-a730-3bac63afcd67', 'Corte niño', 'Para menores de 12 años.', 11000, 30),
+  ('720b75d9-4fe2-463b-b040-8a55e8481efe', 'eaf1c674-7440-4b31-a730-3bac63afcd67', 'Corte a domicilio', 'Corte con máquina y tijera, lavado incluido.', 11500, 45),
+  ('ef9174f5-3218-4edc-acbb-7cc67f6f07c6', 'eaf1c674-7440-4b31-a730-3bac63afcd67', 'Perfilado de barba', 'Perfilado, navaja y bálsamo.', 7000, 25),
+  ('76c3876c-0562-4115-8546-b60fa41744f8', 'eaf1c674-7440-4b31-a730-3bac63afcd67', 'Corte + barba', 'Corte completo y perfilado de barba con toalla caliente.', 17000, 60),
+  ('d8267125-f492-4eda-857c-ddc66db7932f', '6440560d-e728-4a57-846d-274d5df9de11', 'Perfilado de barba', 'Perfilado, navaja y bálsamo.', 7500, 25),
+  ('316421f1-b2ed-4beb-9e52-6fa3a3177bd9', '6440560d-e728-4a57-846d-274d5df9de11', 'Corte niño', 'Para menores de 12 años.', 11500, 30),
+  ('e7f033db-fb3b-4e48-9e5f-d9f63115a12a', '6440560d-e728-4a57-846d-274d5df9de11', 'Corte a domicilio', 'Corte con máquina y tijera, lavado incluido.', 10500, 45),
+  ('664154de-c1cf-41e8-8cdc-4d638185f9e2', '30b96d13-d742-4d87-a8c2-8b57d556fd4d', 'Lifting de pestañas', 'Incluye tinte.', 22500, 60),
+  ('504ccdbd-2218-412a-9eca-b76d014dc9ff', '30b96d13-d742-4d87-a8c2-8b57d556fd4d', 'Maquillaje social', 'Maquillaje de larga duración.', 32000, 60),
+  ('27a178da-c3b6-4c2c-a6f2-a4c7b5e9bf79', '510722d6-14c0-4a53-be41-04f809905d8f', 'Lifting de pestañas', 'Incluye tinte.', 19500, 60),
+  ('81750892-1173-47ca-a380-5d3e4fab0f91', '510722d6-14c0-4a53-be41-04f809905d8f', 'Peinado para evento', 'Ondas, tomados o brushing.', 27500, 60),
+  ('33235d52-b0fe-4aaf-9af0-4e4c67108b09', '510722d6-14c0-4a53-be41-04f809905d8f', 'Maquillaje social', 'Maquillaje de larga duración.', 26000, 60),
+  ('b360d7e2-bf16-46d2-88a0-acc625ff1f3b', '510722d6-14c0-4a53-be41-04f809905d8f', 'Manicure semipermanente', 'Limado, cutícula y esmaltado semipermanente.', 14500, 60),
+  ('02425ad6-98f1-4dca-b75b-e618c4b8035f', 'a126a1a2-e8e0-40e6-8709-31a593bd54c4', 'Manicure semipermanente', 'Limado, cutícula y esmaltado semipermanente.', 15000, 60),
+  ('e2dec1cf-fa56-4dab-b694-ca44b1508790', 'a126a1a2-e8e0-40e6-8709-31a593bd54c4', 'Pedicure spa', 'Exfoliación, hidratación y esmaltado.', 18000, 70),
+  ('05aa4ed7-2be2-4d45-bcdd-ccdb659e2e70', 'a126a1a2-e8e0-40e6-8709-31a593bd54c4', 'Maquillaje social', 'Maquillaje de larga duración.', 33500, 60),
+  ('cb9949f0-7e1e-47c6-a4ac-55f448ba5214', '04a03d6c-390d-412f-9b8b-e1b0fc84184c', 'Limpieza de alfombra', 'Hasta 6 m².', 22500, 90),
+  ('15ea15b1-ec48-48e7-ad3a-f12e91092806', '04a03d6c-390d-412f-9b8b-e1b0fc84184c', 'Limpieza de sofá 3 cuerpos', 'Lavado con inyección-extracción.', 32000, 90),
+  ('2289e442-5bf2-4468-b0ce-d7048a546db7', '6d90ed63-a3f1-4ad7-b7df-11bbefdd808d', 'Limpieza profunda de cocina', 'Desengrase de campana, horno y muebles.', 29000, 180),
+  ('7d0f6321-52b3-4a9f-a8ca-3fbae4835087', '6d90ed63-a3f1-4ad7-b7df-11bbefdd808d', 'Limpieza de alfombra', 'Hasta 6 m².', 28000, 90),
+  ('4cda5263-beaf-4878-bada-eb7d30e086e0', '6d90ed63-a3f1-4ad7-b7df-11bbefdd808d', 'Limpieza de sofá 3 cuerpos', 'Lavado con inyección-extracción.', 25000, 90),
+  ('fc53aca0-8fbb-452c-9ab4-d38417e37c5c', 'bc5d2e20-ff73-4cd3-a8a9-394d8b797600', 'Aseo general (4 horas)', 'Cocina, baños, dormitorios y living.', 34000, 240),
+  ('dcdd2bdf-c902-473d-8197-950061ec5a1b', 'bc5d2e20-ff73-4cd3-a8a9-394d8b797600', 'Limpieza profunda de cocina', 'Desengrase de campana, horno y muebles.', 30500, 180),
+  ('5f4db7a8-238f-4b39-9591-3aafc2f19ed9', 'bc5d2e20-ff73-4cd3-a8a9-394d8b797600', 'Limpieza de alfombra', 'Hasta 6 m².', 26000, 90),
+  ('6fa61576-c142-4bac-b16c-20d2a3b42ccb', '89a16328-c475-4c8f-9ed4-984459932f65', 'Mantención de calefont', 'Limpieza de quemadores y revisión de gases.', 27000, 90),
+  ('65d3371e-d226-4b56-a316-3265f2c65de7', '89a16328-c475-4c8f-9ed4-984459932f65', 'Cambio de llave o monomando', 'Mano de obra. Grifería aparte.', 17500, 60),
+  ('efe0d609-fdfa-4c77-be3b-276bb85bc655', '3d53da8f-5814-4897-8d69-cdbe8187429a', 'Cambio de llave o monomando', 'Mano de obra. Grifería aparte.', 21500, 60),
+  ('0bd75caf-caad-458c-9c34-26dee8eaf01b', '3d53da8f-5814-4897-8d69-cdbe8187429a', 'Visita y diagnóstico', 'Se descuenta si realizas el trabajo.', 15500, 45),
+  ('0c2cbac1-1fef-423b-811d-4a9a1521d673', '89df9695-6006-4ccd-883a-83660f5144dd', 'Destape de cañería', 'Lavaplatos, lavamanos o WC.', 24000, 60),
+  ('75a1ec17-5cb6-4be9-bea8-d74a0d2844da', '89df9695-6006-4ccd-883a-83660f5144dd', 'Cambio de llave o monomando', 'Mano de obra. Grifería aparte.', 18500, 60),
+  ('4c03e157-477a-497b-9d65-7becb177443c', '89df9695-6006-4ccd-883a-83660f5144dd', 'Mantención de calefont', 'Limpieza de quemadores y revisión de gases.', 31000, 90),
+  ('eea59470-be41-4f98-a46c-6bf2f21aadd9', '89df9695-6006-4ccd-883a-83660f5144dd', 'Visita y diagnóstico', 'Se descuenta si realizas el trabajo.', 14500, 45),
+  ('7825fb05-6c82-4c8a-be5a-3829b4b160bd', '3306e833-91f6-43a3-95e2-cd2c087c46d6', 'Revisión de tablero', 'Automáticos, diferencial y conexiones.', 27000, 60),
+  ('0476b102-6079-4e8f-b6dc-92611e8a8a10', '3306e833-91f6-43a3-95e2-cd2c087c46d6', 'Instalación de lámpara', 'Colgante, plafón o aplique.', 10500, 45),
+  ('e8b06ab3-11bf-4971-880f-1f8700ea9520', '3324e783-baf5-43f1-bab8-4de6d46700f4', 'Revisión de tablero', 'Automáticos, diferencial y conexiones.', 25500, 60),
+  ('a0f1ac28-c597-4d32-aaac-95ed7ca547ad', '3324e783-baf5-43f1-bab8-4de6d46700f4', 'Instalación de lámpara', 'Colgante, plafón o aplique.', 13500, 45),
+  ('76cb80dd-c072-4cc5-842a-397300f7a803', '72b1d28e-1dab-4ce2-917d-655bcde14e1a', 'Visita técnica', 'Diagnóstico de fallas eléctricas.', 17000, 45),
+  ('9862078c-acbc-4b4a-96ca-9b0b765e0742', '72b1d28e-1dab-4ce2-917d-655bcde14e1a', 'Cambio de enchufe', 'Por unidad, material aparte.', 8000, 20),
+  ('9c4b6e08-a9b8-49a8-8fc9-3b60c4640094', '72b1d28e-1dab-4ce2-917d-655bcde14e1a', 'Revisión de tablero', 'Automáticos, diferencial y conexiones.', 22000, 60),
+  ('9d35e62e-5c27-445f-9502-62d139f53706', '9ee75154-bc6c-4804-8b83-35eb90542227', 'Reparaciones varias (1 hora)', 'Puertas, bisagras, sellos, etc.', 15000, 60),
+  ('712581c1-9589-4a7b-9369-ffa219e8a116', '9ee75154-bc6c-4804-8b83-35eb90542227', 'Instalación de repisas o cuadros', 'Hasta 4 elementos.', 12500, 45),
+  ('bc755a2a-9a43-4867-9525-e1cfb5b6fb5b', '9ee75154-bc6c-4804-8b83-35eb90542227', 'Pintura de habitación', 'Hasta 12 m², pintura aparte.', 57500, 360),
+  ('a1293a6d-08c5-4070-b611-cf12b75ef5d8', '9ee75154-bc6c-4804-8b83-35eb90542227', 'Armado de muebles', 'Closets, camas, escritorios y más.', 18000, 90),
+  ('2b9c7d70-fa43-4c9b-8a85-c9e2fca681ba', '433c2e40-5e69-4a36-96ca-b2ad28555751', 'Pintura de habitación', 'Hasta 12 m², pintura aparte.', 59500, 360),
+  ('7f2e8401-5f65-4616-b352-d883133153a9', '433c2e40-5e69-4a36-96ca-b2ad28555751', 'Instalación de repisas o cuadros', 'Hasta 4 elementos.', 10000, 45),
+  ('62bcf4a7-4e66-41fd-bf78-fa2f1f0eff36', '40f848b1-1350-4629-8a6d-cb12028a92a5', 'Pintura de habitación', 'Hasta 12 m², pintura aparte.', 62500, 360),
+  ('8753950c-09c9-4490-bd3e-fae43e34649c', '40f848b1-1350-4629-8a6d-cb12028a92a5', 'Reparaciones varias (1 hora)', 'Puertas, bisagras, sellos, etc.', 17000, 60),
+  ('230ff34d-62b5-4ddb-95aa-9652b74151ef', '2212694b-5386-4035-a407-56bd97c88898', 'Paseo de perro (1 hora)', 'Paseo individual o en grupo pequeño.', 6500, 60),
+  ('601ae1c1-6fa4-4bbe-a9bd-5c3f41f895ab', '2212694b-5386-4035-a407-56bd97c88898', 'Visita de cuidado', 'Comida, agua y compañía cuando no estás.', 10000, 45),
+  ('40af8f20-be93-4400-b336-0a1b37ca18be', '56a6fe01-d0e1-4082-acbe-cff62e37a1ee', 'Visita de cuidado', 'Comida, agua y compañía cuando no estás.', 9500, 45),
+  ('d0d0f0aa-34c3-4cf1-92db-d0b76094bcb2', '56a6fe01-d0e1-4082-acbe-cff62e37a1ee', 'Paseo de perro (1 hora)', 'Paseo individual o en grupo pequeño.', 6500, 60),
+  ('167b484a-26e6-419d-8c58-55ba112ac4af', '04a74629-0705-47e5-9a10-aca554f5f1eb', 'Paseo de perro (1 hora)', 'Paseo individual o en grupo pequeño.', 6500, 60),
+  ('34f95ee0-d956-4f14-ac53-73029a26a949', '04a74629-0705-47e5-9a10-aca554f5f1eb', 'Visita de cuidado', 'Comida, agua y compañía cuando no estás.', 10000, 45),
+  ('c70c88f0-fecb-45f7-a700-0541e9c7d108', '04a74629-0705-47e5-9a10-aca554f5f1eb', 'Baño y corte canino', 'A domicilio, según tamaño.', 18500, 90),
+  ('9c4140aa-ea3f-4140-be53-b22cc9f96402', '022988b6-9151-4b81-b793-4b6fcf8cf948', 'Lavado de tapiz', 'Asientos, alfombras y techo.', 36000, 150),
+  ('fe44f295-8e64-447c-a676-a9e43254d0a8', '022988b6-9151-4b81-b793-4b6fcf8cf948', 'Lavado exterior + interior', 'Carrocería, llantas, vidrios y aspirado.', 14000, 60),
+  ('50b3582e-a8c9-4920-87f3-dd2d58ebbb16', '022988b6-9151-4b81-b793-4b6fcf8cf948', 'Pulido y encerado', 'Recupera el brillo de la pintura.', 30500, 120),
+  ('b6abf26e-b442-4c3b-a356-f080a450dd11', '5ecf1516-e771-422b-a212-460b401d2ace', 'Pulido y encerado', 'Recupera el brillo de la pintura.', 31000, 120),
+  ('bb058bf2-18bf-4d97-abc0-062f68e1af0a', '5ecf1516-e771-422b-a212-460b401d2ace', 'Lavado de tapiz', 'Asientos, alfombras y techo.', 34500, 150),
+  ('7e2bfc9e-ae0b-43c1-8fd8-fb38cb4bf21a', 'fdca69b1-6cf6-4837-9d55-8dc3b2d31058', 'Pulido y encerado', 'Recupera el brillo de la pintura.', 27500, 120),
+  ('f74f0e9f-8e5d-4241-838e-c3f2407285cb', 'fdca69b1-6cf6-4837-9d55-8dc3b2d31058', 'Lavado exterior + interior', 'Carrocería, llantas, vidrios y aspirado.', 16500, 60),
+  ('57276029-9dff-456d-89a0-e079ea71a8a4', 'fdca69b1-6cf6-4837-9d55-8dc3b2d31058', 'Lavado de tapiz', 'Asientos, alfombras y techo.', 37500, 150),
+  ('92b1a7ef-ff09-41f2-af91-fc405be0c877', '405c4cd2-0edd-4f15-8e5c-b5257cd00bfe', 'Apertura de puerta', 'Sin daño en la mayoría de los casos.', 28000, 30),
+  ('2d075d08-4425-4cc5-96e0-d382168d14c3', '405c4cd2-0edd-4f15-8e5c-b5257cd00bfe', 'Copia de llaves a domicilio', 'Hasta 3 copias.', 8500, 20),
+  ('480342d4-92b6-49bd-976d-0e23421e45d5', '405c4cd2-0edd-4f15-8e5c-b5257cd00bfe', 'Cambio de chapa', 'Mano de obra. Chapa aparte.', 27500, 45),
+  ('108866d4-ce2e-4d38-8faa-4b90c415d646', 'e98639c7-d4ca-48a6-a6ee-63cfb4d6cdee', 'Cambio de chapa', 'Mano de obra. Chapa aparte.', 31000, 45),
+  ('a3b8b299-73d0-42bf-9517-37c6b679c607', 'e98639c7-d4ca-48a6-a6ee-63cfb4d6cdee', 'Apertura de puerta', 'Sin daño en la mayoría de los casos.', 24500, 30),
+  ('8890312e-cee0-473c-924c-d2fae54654b4', 'e98639c7-d4ca-48a6-a6ee-63cfb4d6cdee', 'Copia de llaves a domicilio', 'Hasta 3 copias.', 7500, 20),
+  ('5afea3c5-7e9e-4580-a85e-759b28692a56', '04668b65-f1f1-4c55-8331-2629af38bf28', 'Copia de llaves a domicilio', 'Hasta 3 copias.', 8500, 20),
+  ('174aa5b8-dacd-4f4f-806b-80c86effb87b', '04668b65-f1f1-4c55-8331-2629af38bf28', 'Apertura de puerta', 'Sin daño en la mayoría de los casos.', 22000, 30),
+  ('1b20b3de-8759-4cfa-b86f-7020c67350d0', '71bfbbbc-8ffa-40d6-9c39-7105ffe3e1e5', 'Configuración de wifi', 'Router, repetidores y red mesh.', 17000, 45),
+  ('4faad596-63da-45d6-91a5-7a5fcf418550', '71bfbbbc-8ffa-40d6-9c39-7105ffe3e1e5', 'Mantención de notebook', 'Limpieza interna y cambio de pasta térmica.', 19000, 60),
+  ('c832265d-3e31-4399-a3c6-3901f8de60a6', '50ce16fb-2799-4d43-ae2d-a5967f81f013', 'Configuración de wifi', 'Router, repetidores y red mesh.', 17000, 45),
+  ('0cea9d92-6e05-4c18-95f4-3a85f8ab8837', '50ce16fb-2799-4d43-ae2d-a5967f81f013', 'Mantención de notebook', 'Limpieza interna y cambio de pasta térmica.', 17500, 60),
+  ('3b115c70-aad6-498c-b639-e82d5d68d47b', '50ce16fb-2799-4d43-ae2d-a5967f81f013', 'Formateo + respaldo', 'Windows o macOS, con respaldo de archivos.', 22000, 120),
+  ('00b7a438-c239-4ced-9d8b-88e0f1eba77e', 'e34112bf-6af0-4c47-8603-c942f221b1d4', 'Configuración de wifi', 'Router, repetidores y red mesh.', 15000, 45),
+  ('bf1d0509-4215-4625-af13-1325d7f17705', 'e34112bf-6af0-4c47-8603-c942f221b1d4', 'Formateo + respaldo', 'Windows o macOS, con respaldo de archivos.', 23500, 120),
+  ('dc925b0f-9d8d-45d6-ae23-97e3d887cbd1', '89dbd0a8-7a51-4002-bbb7-ad99a708f5cf', 'Clase de matemáticas (1 h)', 'Básica, media o universitaria.', 15000, 60),
+  ('408bc6df-2c2e-47b9-a421-5b28683e3d0e', '89dbd0a8-7a51-4002-bbb7-ad99a708f5cf', 'Preparación PAES (1 h)', 'Ensayos y técnicas de resolución.', 18000, 60),
+  ('eba6352e-c32d-4c39-924c-3f5ad6027bc5', '89dbd0a8-7a51-4002-bbb7-ad99a708f5cf', 'Clase de guitarra (1 h)', 'Acústica o eléctrica.', 12000, 60),
+  ('22776b28-5890-4266-a20f-0ad24b9c46f8', '0324286d-e54f-45e7-899c-a903fe574d0d', 'Inglés conversacional (1 h)', 'Todos los niveles.', 12000, 60),
+  ('55c3ddd5-930c-4f53-86fc-6fd95b68d32d', '0324286d-e54f-45e7-899c-a903fe574d0d', 'Preparación PAES (1 h)', 'Ensayos y técnicas de resolución.', 17000, 60),
+  ('014c6758-3d31-424a-89ea-4ce7e2cd2c87', '0324286d-e54f-45e7-899c-a903fe574d0d', 'Clase de guitarra (1 h)', 'Acústica o eléctrica.', 12000, 60),
+  ('f40fcc8e-d143-4deb-b085-af250b7702ba', '0324286d-e54f-45e7-899c-a903fe574d0d', 'Clase de matemáticas (1 h)', 'Básica, media o universitaria.', 16500, 60),
+  ('1765f3c3-05d8-4f52-a682-882ccb7dd05b', 'a9253c5b-225d-460c-99a5-00f50503d68e', 'Inglés conversacional (1 h)', 'Todos los niveles.', 14500, 60),
+  ('44f4b27b-6b9a-458e-8f78-50e4fe1cc984', 'a9253c5b-225d-460c-99a5-00f50503d68e', 'Clase de guitarra (1 h)', 'Acústica o eléctrica.', 13000, 60),
+  ('7711baa8-bb34-4c18-bb34-80dd918ab74e', 'a9253c5b-225d-460c-99a5-00f50503d68e', 'Preparación PAES (1 h)', 'Ensayos y técnicas de resolución.', 19500, 60),
+  ('5ef34514-f747-4035-b3fc-6ed4988ca580', '45a9c520-9302-4711-8105-a1c34a03d3d5', 'Masaje relajante (60 min)', 'Aceites esenciales y música.', 28500, 60),
+  ('d6bb7df7-e097-4014-8edd-e1d5c7fca8d3', '45a9c520-9302-4711-8105-a1c34a03d3d5', 'Sesión de kinesiología', 'Evaluación y tratamiento a domicilio.', 30500, 60),
+  ('94f2a8b1-496f-4531-b883-1dc57a79c871', '45a9c520-9302-4711-8105-a1c34a03d3d5', 'Masaje descontracturante (60 min)', 'Espalda, cuello y hombros.', 28500, 60),
+  ('37d9d311-05a3-435d-acd9-66fbc28c2a2a', '004d8d8b-bde9-4d79-b8b0-043cebeb3b19', 'Masaje relajante (60 min)', 'Aceites esenciales y música.', 28000, 60),
+  ('6f9092fd-c64d-464c-9c84-fec6bc3aca06', '004d8d8b-bde9-4d79-b8b0-043cebeb3b19', 'Masaje descontracturante (60 min)', 'Espalda, cuello y hombros.', 28000, 60),
+  ('84dfdb1b-3858-4ac8-981e-5e70d6941df6', '004d8d8b-bde9-4d79-b8b0-043cebeb3b19', 'Sesión de kinesiología', 'Evaluación y tratamiento a domicilio.', 30500, 60),
+  ('76edc06e-3536-4bbf-a2cf-a4869771a664', 'e8db3107-9731-426a-95c8-b7b209fda5df', 'Sesión de kinesiología', 'Evaluación y tratamiento a domicilio.', 31500, 60),
+  ('ec91e8ca-0ee5-418e-9863-4116a84494cb', 'e8db3107-9731-426a-95c8-b7b209fda5df', 'Masaje descontracturante (60 min)', 'Espalda, cuello y hombros.', 28000, 60),
+  ('5e38d1a6-45aa-4482-82c7-3bf6844e17b0', 'e8db3107-9731-426a-95c8-b7b209fda5df', 'Masaje relajante (60 min)', 'Aceites esenciales y música.', 24500, 60),
+  ('a4380c0b-5ed0-4b66-bbf4-97c7a5f1fd87', 'e93239c1-2cbc-4c1c-8806-9ce82065a391', 'Clase de yoga a domicilio', 'Principiantes e intermedios.', 19500, 60),
+  ('701c3bbd-630c-451e-9fca-455f287066c6', 'e93239c1-2cbc-4c1c-8806-9ce82065a391', 'Sesión personalizada (1 h)', 'Plan según tu objetivo.', 21500, 60),
+  ('5d48faed-c0f6-45ff-9f41-42297a699b82', 'e93239c1-2cbc-4c1c-8806-9ce82065a391', 'Plan mensual (8 sesiones)', 'Dos sesiones por semana con seguimiento.', 129500, 60),
+  ('07d9d607-e3d8-4340-8bc6-8b6d9c9d8347', '384f9f55-6774-47b8-bda5-60b2e5de04d3', 'Clase de yoga a domicilio', 'Principiantes e intermedios.', 19000, 60),
+  ('0761ba43-782a-42a3-bc03-f6a9955d4c5e', '384f9f55-6774-47b8-bda5-60b2e5de04d3', 'Plan mensual (8 sesiones)', 'Dos sesiones por semana con seguimiento.', 146000, 60),
+  ('ac785767-b1a3-4836-981e-0c500f30bd13', '384f9f55-6774-47b8-bda5-60b2e5de04d3', 'Sesión personalizada (1 h)', 'Plan según tu objetivo.', 18500, 60),
+  ('59d1f7f5-0070-45cc-bab0-4eaee7f25114', '91a90c87-f01b-4b22-b9bd-810c3d9d4a8e', 'Clase de yoga a domicilio', 'Principiantes e intermedios.', 17000, 60),
+  ('f1991abb-0297-4358-a26e-b24f8d9e5331', '91a90c87-f01b-4b22-b9bd-810c3d9d4a8e', 'Sesión personalizada (1 h)', 'Plan según tu objetivo.', 20500, 60),
+  ('ce32e324-4a3b-4751-b68f-1743350c9a12', 'cf7a1244-29c8-47e2-897c-47404773c041', 'Flete pequeño (camioneta)', 'Dentro de Santiago, hasta 20 km.', 23500, 60),
+  ('1a5f3639-e544-41ec-a351-09654b3ff1bf', 'cf7a1244-29c8-47e2-897c-47404773c041', 'Mudanza de departamento', 'Camión 3/4 con 2 ayudantes.', 104500, 300),
+  ('6949ad8c-3568-4c24-b7cc-1d71a928986d', '84dbb6b8-354c-4d2b-af7e-6ed591ccccdf', 'Traslado de electrodomésticos', 'Refrigerador, lavadora o cocina.', 19000, 60),
+  ('6c119f3f-bba6-40ad-9eea-98f6c98ba9f0', '84dbb6b8-354c-4d2b-af7e-6ed591ccccdf', 'Mudanza de departamento', 'Camión 3/4 con 2 ayudantes.', 103500, 300),
+  ('57ec82a1-49e1-450f-818f-4e2939dd6a80', '84dbb6b8-354c-4d2b-af7e-6ed591ccccdf', 'Flete pequeño (camioneta)', 'Dentro de Santiago, hasta 20 km.', 22500, 60),
+  ('94456425-b6d7-48e6-ab0c-5ed9eea7b199', '038dc3e5-a685-4217-a4ac-f8381db74622', 'Flete pequeño (camioneta)', 'Dentro de Santiago, hasta 20 km.', 21500, 60),
+  ('e44d52fe-48cd-4e7f-82bf-23552398d4e5', '038dc3e5-a685-4217-a4ac-f8381db74622', 'Traslado de electrodomésticos', 'Refrigerador, lavadora o cocina.', 19500, 60),
+  ('a9ec2e9e-0208-4e54-b35f-08f051317e39', '038dc3e5-a685-4217-a4ac-f8381db74622', 'Mudanza de departamento', 'Camión 3/4 con 2 ayudantes.', 138000, 300)
+on conflict (id) do update set title = excluded.title, description = excluded.description,
+  price = excluded.price, duration_min = excluded.duration_min, active = true;
+
+-- Publicaciones (fotos de Unsplash, licencia libre)
+insert into public.posts (id, provider_id, image_url, caption, likes_count, created_at) values
+  ('e934ebb8-f447-4189-a683-e18756d249b8', '5d71952f-95de-4168-83ea-43094b25a1cb', 'https://images.unsplash.com/photo-1738193830098-2d92352a1856', 'Jardín de bajo consumo de agua, ideal para Santiago', 214, now() - interval '278 hours'),
+  ('0f737b85-09a8-4d3d-af99-938259897e5e', '5d71952f-95de-4168-83ea-43094b25a1cb', 'https://images.unsplash.com/photo-1597868165956-03a6827955b1', 'Así quedó este jardín en La Reina después del corte 🌿', 356, now() - interval '812 hours'),
+  ('56f3dccf-6295-4eb9-aeca-84f41cda1df2', '5d71952f-95de-4168-83ea-43094b25a1cb', 'https://images.unsplash.com/photo-1690068023694-053da714f95f', 'Así quedó este jardín en La Reina después del corte 🌿', 185, now() - interval '1150 hours'),
+  ('67c38a10-a76e-4615-a4e4-83d8c5a04441', '97dd5002-e9b3-49ed-982c-1f32046cbff7', 'https://images.unsplash.com/photo-1621272156568-7306716648df', 'Así quedó este jardín en La Reina después del corte 🌿', 462, now() - interval '498 hours'),
+  ('751bb4a7-d129-437a-bc5b-52ff1168c6c2', '97dd5002-e9b3-49ed-982c-1f32046cbff7', 'https://images.unsplash.com/photo-1590820292118-e256c3ac2676', 'Poda de cerco terminada, listo para la primavera', 279, now() - interval '562 hours'),
+  ('333c3d4e-29bf-42bf-8967-aa45cc87c67a', '97dd5002-e9b3-49ed-982c-1f32046cbff7', 'https://images.unsplash.com/photo-1621460248083-6271cc4437a8', 'Antes y después: limpieza de maleza completa', 168, now() - interval '9 hours'),
+  ('872dbda4-92a8-410d-9578-7f75a917f457', '7197e33c-da06-4cff-a0ef-ee2dc7245e42', 'https://images.unsplash.com/photo-1458245201577-fc8a130b8829', 'Mantención mensual al día ✂️🌱', 69, now() - interval '263 hours'),
+  ('98b9254b-bb32-43c1-9e4f-d317c6e331a2', '7197e33c-da06-4cff-a0ef-ee2dc7245e42', 'https://images.unsplash.com/photo-1689728318937-17d24bc0a65c', 'Antes y después: limpieza de maleza completa', 194, now() - interval '140 hours'),
+  ('9e01b524-4569-41a1-bfeb-807d83ca5355', 'd9c1a3d8-172c-4c9f-8188-2d9ce7a53bf9', 'https://images.unsplash.com/photo-1637640125496-31852f042a60', 'Frenos nuevos y probados antes de entregar', 162, now() - interval '1136 hours'),
+  ('1ded8d40-dcc7-4eaf-be60-03265e1a29dd', 'd9c1a3d8-172c-4c9f-8188-2d9ce7a53bf9', 'https://images.unsplash.com/photo-1643701079732-3b1c7a797e3d', 'Cambio de aceite hecho en el estacionamiento del cliente 🔧', 118, now() - interval '580 hours'),
+  ('4c3ccd3d-8085-4d4d-8a41-2eeecbdd0f39', 'd9c1a3d8-172c-4c9f-8188-2d9ce7a53bf9', 'https://images.unsplash.com/photo-1643700973089-baa86a1ab9ee', 'Mantención de 50.000 km sin ir al taller', 153, now() - interval '328 hours'),
+  ('1cf99173-6fa8-4d0d-9116-0c9ed1f410f3', '4c27a439-86ff-4d62-9263-2e766ca3c848', 'https://images.unsplash.com/photo-1687462970787-61d953508926', 'Frenos nuevos y probados antes de entregar', 54, now() - interval '16 hours'),
+  ('757a2053-cca3-4bb4-a20f-43cfda145bf4', '4c27a439-86ff-4d62-9263-2e766ca3c848', 'https://images.unsplash.com/photo-1645445522156-9ac06bc7a767', 'Cambio de aceite hecho en el estacionamiento del cliente 🔧', 331, now() - interval '61 hours'),
+  ('a58cb885-8ebd-4735-98f3-fb8810ee07ab', '4c27a439-86ff-4d62-9263-2e766ca3c848', 'https://images.unsplash.com/photo-1615906655593-ad0386982a0f', 'Cambio de aceite hecho en el estacionamiento del cliente 🔧', 361, now() - interval '137 hours'),
+  ('a2618fbe-211e-4759-86e4-893d41af8f9d', '6c027df6-274d-44e2-9b43-fb580d738756', 'https://images.unsplash.com/photo-1619642751034-765dfdf7c58e', 'Otra batería instalada en menos de 30 min', 124, now() - interval '11 hours'),
+  ('09e71997-5bd4-458c-b5ac-7e2073287629', '6c027df6-274d-44e2-9b43-fb580d738756', 'https://images.unsplash.com/photo-1637640125496-31852f042a60', 'Mantención de 50.000 km sin ir al taller', 235, now() - interval '720 hours'),
+  ('b6c9c183-9bce-4951-b9a4-530944d7dfcb', '6c027df6-274d-44e2-9b43-fb580d738756', 'https://images.unsplash.com/photo-1643701079732-3b1c7a797e3d', 'Otra batería instalada en menos de 30 min', 393, now() - interval '601 hours'),
+  ('fe1db512-43cb-40e8-8f98-fcd2426b45d8', 'd7665b14-0cca-458a-bd35-94e7aa5dc48f', 'https://images.unsplash.com/photo-1599351431202-1e0f0137899a', 'Fade limpio recién terminado 💈', 280, now() - interval '1130 hours'),
+  ('7f132f1d-d8d5-4739-ab6b-3d3ea3268ff9', 'd7665b14-0cca-458a-bd35-94e7aa5dc48f', 'https://images.unsplash.com/photo-1503951914875-452162b0f3f1', 'Así trabajamos a domicilio: todo desinfectado', 99, now() - interval '369 hours'),
+  ('8102eac0-d06d-425f-b966-c3db5bca9689', 'd7665b14-0cca-458a-bd35-94e7aa5dc48f', 'https://images.unsplash.com/photo-1635273051839-003bf06a8751', 'Fade limpio recién terminado 💈', 216, now() - interval '374 hours'),
+  ('ef5e7c25-a747-4993-bd06-35c766601bcc', 'd7665b14-0cca-458a-bd35-94e7aa5dc48f', 'https://images.unsplash.com/photo-1493256338651-d82f7acb2b38', 'Fade limpio recién terminado 💈', 9, now() - interval '508 hours'),
+  ('0273e029-3596-4707-97fe-4ce350c34c6e', 'eaf1c674-7440-4b31-a730-3bac63afcd67', 'https://images.unsplash.com/photo-1605497788044-5a32c7078486', 'Fade limpio recién terminado 💈', 358, now() - interval '342 hours'),
+  ('c0922720-339a-4240-89fe-e35ee922769f', 'eaf1c674-7440-4b31-a730-3bac63afcd67', 'https://images.unsplash.com/photo-1599011176306-4a96f1516d4d', 'Corte + barba con toalla caliente', 238, now() - interval '1290 hours'),
+  ('7216f95e-120e-4e39-add0-f70c5300820a', 'eaf1c674-7440-4b31-a730-3bac63afcd67', 'https://images.unsplash.com/photo-1635273051937-a0ddef9573b6', 'Diseño a pedido del cliente', 288, now() - interval '1131 hours'),
+  ('243c68ec-2d0a-4447-bfec-6e9d9da08bf9', '6440560d-e728-4a57-846d-274d5df9de11', 'https://images.unsplash.com/photo-1593702275687-f8b402bf1fb5', 'Corte + barba con toalla caliente', 347, now() - interval '1131 hours'),
+  ('bd9b290b-646c-4c6c-b10f-1dc3cc5775e0', '6440560d-e728-4a57-846d-274d5df9de11', 'https://images.unsplash.com/photo-1599351431202-1e0f0137899a', 'Fade limpio recién terminado 💈', 205, now() - interval '394 hours'),
+  ('ff40bb70-88e8-46c4-9f0b-af3279db23b4', '6440560d-e728-4a57-846d-274d5df9de11', 'https://images.unsplash.com/photo-1503951914875-452162b0f3f1', 'Clásico que nunca falla', 190, now() - interval '469 hours'),
+  ('bf0bdc66-8681-4159-b148-ef66d8e80a82', '30b96d13-d742-4d87-a8c2-8b57d556fd4d', 'https://images.unsplash.com/photo-1580618672591-eb180b1a973f', 'Look de graduación ✨', 362, now() - interval '819 hours'),
+  ('0f6d38a4-be18-43a8-8748-624c2b27e920', '30b96d13-d742-4d87-a8c2-8b57d556fd4d', 'https://images.unsplash.com/photo-1643648854897-7b5845b4c04c', 'Manicure francesa moderna', 446, now() - interval '897 hours'),
+  ('268e0a3a-76f4-440f-8f5a-1efa7d416ba5', '30b96d13-d742-4d87-a8c2-8b57d556fd4d', 'https://images.unsplash.com/photo-1632345031435-8727f6897d53', 'Pedicure spa completo', 26, now() - interval '287 hours'),
+  ('b4554d93-15b0-4231-87a1-c5cc3ca4f77a', '30b96d13-d742-4d87-a8c2-8b57d556fd4d', 'https://images.unsplash.com/photo-1630843599725-32ead7671867', 'Semipermanente nude para el día a día 💅', 387, now() - interval '566 hours'),
+  ('356790c2-6219-43e2-a51a-816e1c127c15', '510722d6-14c0-4a53-be41-04f809905d8f', 'https://images.unsplash.com/photo-1634449571010-02389ed0f9b0', 'Nail art para un matrimonio', 177, now() - interval '117 hours'),
+  ('fd4775a3-c8f4-459a-8463-89bb5e39056b', '510722d6-14c0-4a53-be41-04f809905d8f', 'https://images.unsplash.com/photo-1604654894610-df63bc536371', 'Look de graduación ✨', 469, now() - interval '1357 hours'),
+  ('96167cd2-697b-4e4d-8642-691dcabb0777', '510722d6-14c0-4a53-be41-04f809905d8f', 'https://images.unsplash.com/photo-1629397685944-7073f5589754', 'Semipermanente nude para el día a día 💅', 132, now() - interval '693 hours'),
+  ('d0394222-e706-4cbc-b2d0-bd5836b95733', 'a126a1a2-e8e0-40e6-8709-31a593bd54c4', 'https://images.unsplash.com/photo-1610992015762-45dca7fa3a85', 'Manicure francesa moderna', 426, now() - interval '833 hours'),
+  ('0c0b1215-23ad-418d-8c8b-b0e8be8621a1', 'a126a1a2-e8e0-40e6-8709-31a593bd54c4', 'https://images.unsplash.com/photo-1675034743339-0b0747047727', 'Manicure francesa moderna', 404, now() - interval '1012 hours'),
+  ('1df2f7d2-8880-435e-846a-96db812a7dc8', '04a03d6c-390d-412f-9b8b-e1b0fc84184c', 'https://images.unsplash.com/photo-1740657254989-42fe9c3b8cce', 'Aseo post mudanza en Las Condes', 389, now() - interval '675 hours'),
+  ('cb101f59-cce9-48b4-9e6c-c1398fe0acd4', '04a03d6c-390d-412f-9b8b-e1b0fc84184c', 'https://images.unsplash.com/photo-1527515637462-cff94eecc1ac', 'Productos incluidos, tú solo relájate', 105, now() - interval '270 hours'),
+  ('27c16df5-fcec-4cb7-b8b8-b3d25f21caf8', '6d90ed63-a3f1-4ad7-b7df-11bbefdd808d', 'https://images.unsplash.com/photo-1583847268964-b28dc8f51f92', 'Sofá como nuevo después del lavado', 171, now() - interval '677 hours'),
+  ('51f17e65-6c65-416e-890b-114dad7bb4ee', '6d90ed63-a3f1-4ad7-b7df-11bbefdd808d', 'https://images.unsplash.com/photo-1646980241033-cd7abda2ee88', 'Sofá como nuevo después del lavado', 333, now() - interval '844 hours'),
+  ('e22c91b9-339d-4f8f-8d85-46f013a560bc', '6d90ed63-a3f1-4ad7-b7df-11bbefdd808d', 'https://images.unsplash.com/photo-1647381518264-97ff1835026f', 'Aseo post mudanza en Las Condes', 319, now() - interval '1249 hours'),
+  ('f2bce695-3aa8-4160-afc8-3133d805e6d1', '6d90ed63-a3f1-4ad7-b7df-11bbefdd808d', 'https://images.unsplash.com/photo-1563453392212-326f5e854473', 'Departamento listo para entregar ✨', 289, now() - interval '1213 hours'),
+  ('deb54e85-7fc1-4d2e-998a-5546aceb21cc', 'bc5d2e20-ff73-4cd3-a8a9-394d8b797600', 'https://images.unsplash.com/photo-1585421514284-efb74c2b69ba', 'Departamento listo para entregar ✨', 329, now() - interval '1397 hours'),
+  ('85deffc5-a335-4bda-b8f4-ba7fb6aeade2', 'bc5d2e20-ff73-4cd3-a8a9-394d8b797600', 'https://images.unsplash.com/photo-1740657254989-42fe9c3b8cce', 'Sofá como nuevo después del lavado', 108, now() - interval '1222 hours'),
+  ('4800eb3e-0ab6-4910-a262-d65ef618ae3b', 'bc5d2e20-ff73-4cd3-a8a9-394d8b797600', 'https://images.unsplash.com/photo-1527515637462-cff94eecc1ac', 'Productos incluidos, tú solo relájate', 467, now() - interval '1266 hours'),
+  ('3c0e36df-990e-4716-9e90-13fbdb850a96', 'bc5d2e20-ff73-4cd3-a8a9-394d8b797600', 'https://images.unsplash.com/photo-1713110824336-f78c320dcf8e', 'Limpieza profunda de cocina terminada', 92, now() - interval '294 hours'),
+  ('c64c156f-834d-4f41-b141-bcd31144beeb', '89a16328-c475-4c8f-9ed4-984459932f65', 'https://images.unsplash.com/photo-1749532125405-70950966b0e5', 'Instalación de grifería nueva', 166, now() - interval '910 hours'),
+  ('eccf9a3d-f857-42bf-9e12-d56f9bd7d36c', '89a16328-c475-4c8f-9ed4-984459932f65', 'https://images.unsplash.com/photo-1676210134050-6f12c6898395', 'Baño renovado con sanitarios nuevos', 62, now() - interval '929 hours'),
+  ('71191fc7-d1a7-407d-ac81-745265051fca', '3d53da8f-5814-4897-8d69-cdbe8187429a', 'https://images.unsplash.com/photo-1676210134190-3f2c0d5cf58d', 'Calefont mantenido y funcionando perfecto 🔥', 91, now() - interval '1107 hours'),
+  ('5bab2788-9b5f-426c-8fc4-778e2db096b4', '3d53da8f-5814-4897-8d69-cdbe8187429a', 'https://images.unsplash.com/photo-1521207418485-99c705420785', 'Fuga reparada bajo el lavaplatos', 104, now() - interval '996 hours'),
+  ('c3dfeba5-cff4-49fa-abcf-b04dffaa97e8', '3d53da8f-5814-4897-8d69-cdbe8187429a', 'https://images.unsplash.com/photo-1620653713380-7a34b773fef8', 'Baño renovado con sanitarios nuevos', 82, now() - interval '242 hours'),
+  ('752a8141-54cb-4951-8c0c-d15b609cd3d4', '3d53da8f-5814-4897-8d69-cdbe8187429a', 'https://images.unsplash.com/photo-1676210133055-eab6ef033ce3', 'Calefont mantenido y funcionando perfecto 🔥', 355, now() - interval '1044 hours'),
+  ('1179fdef-d920-43e6-b51e-a742b1713dfd', '89df9695-6006-4ccd-883a-83660f5144dd', 'https://images.unsplash.com/photo-1749532125405-70950966b0e5', 'Instalación de grifería nueva', 282, now() - interval '145 hours'),
+  ('c4b8660b-68f0-4d13-86d0-386795246c21', '89df9695-6006-4ccd-883a-83660f5144dd', 'https://images.unsplash.com/photo-1676210134050-6f12c6898395', 'Fuga reparada bajo el lavaplatos', 288, now() - interval '597 hours'),
+  ('4d8f9b59-5c62-4083-9a71-903b759a2965', '89df9695-6006-4ccd-883a-83660f5144dd', 'https://images.unsplash.com/photo-1596394723269-b2cbca4e6313', 'Baño renovado con sanitarios nuevos', 31, now() - interval '1305 hours'),
+  ('85345884-fe3a-424e-aca1-3598cd483f79', '3306e833-91f6-43a3-95e2-cd2c087c46d6', 'https://images.unsplash.com/photo-1621905251189-08b45d6a269e', 'Circuito nuevo para la cocina', 449, now() - interval '251 hours'),
+  ('b9ade59b-977d-4aef-a4c2-9db1ff595ff2', '3306e833-91f6-43a3-95e2-cd2c087c46d6', 'https://images.unsplash.com/photo-1682345262055-8f95f3c513ea', 'Instalación de iluminación LED', 429, now() - interval '762 hours'),
+  ('91561860-603e-4e51-95f7-93e8617dcf60', '3306e833-91f6-43a3-95e2-cd2c087c46d6', 'https://images.unsplash.com/photo-1601462904263-f2fa0c851cb9', 'Revisión con multímetro antes de entregar', 66, now() - interval '180 hours'),
+  ('2386041b-4013-431e-a81e-36cb6d41c83e', '3306e833-91f6-43a3-95e2-cd2c087c46d6', 'https://images.unsplash.com/photo-1660330589693-99889d60181e', 'Cambio de enchufes en toda la casa', 255, now() - interval '336 hours'),
+  ('17820014-8a43-4627-b06b-5fe392ae82b2', '3324e783-baf5-43f1-bab8-4de6d46700f4', 'https://images.unsplash.com/photo-1621905251918-48416bd8575a', 'Circuito nuevo para la cocina', 371, now() - interval '987 hours'),
+  ('01397bd5-129d-4948-b6a0-930db954839b', '3324e783-baf5-43f1-bab8-4de6d46700f4', 'https://images.unsplash.com/photo-1758101755915-462eddc23f57', 'Cambio de enchufes en toda la casa', 294, now() - interval '132 hours'),
+  ('99fdaaf8-f4ab-479b-9b75-c5d6c8bd11f3', '3324e783-baf5-43f1-bab8-4de6d46700f4', 'https://images.unsplash.com/photo-1621905251189-08b45d6a269e', 'Revisión con multímetro antes de entregar', 476, now() - interval '592 hours'),
+  ('3e4f0dcd-0055-41f8-9202-c7d2e15e421b', '3324e783-baf5-43f1-bab8-4de6d46700f4', 'https://images.unsplash.com/photo-1682345262055-8f95f3c513ea', 'Instalación de iluminación LED', 466, now() - interval '563 hours'),
+  ('ef26da49-ea49-41c7-b8ba-4b8e8cdbc6b0', '72b1d28e-1dab-4ce2-917d-655bcde14e1a', 'https://images.unsplash.com/photo-1660330589693-99889d60181e', 'Instalación de iluminación LED', 34, now() - interval '971 hours'),
+  ('e0c102d6-2423-4bea-9df9-4cbce71eb429', '72b1d28e-1dab-4ce2-917d-655bcde14e1a', 'https://images.unsplash.com/photo-1635335874521-7987db781153', 'Revisión con multímetro antes de entregar', 316, now() - interval '988 hours'),
+  ('e884037f-c830-4e60-8210-8f4b1fbece9f', '72b1d28e-1dab-4ce2-917d-655bcde14e1a', 'https://images.unsplash.com/photo-1621905251918-48416bd8575a', 'Circuito nuevo para la cocina', 206, now() - interval '290 hours'),
+  ('14e43d81-423b-4b4c-8bc3-415bf238cff5', '72b1d28e-1dab-4ce2-917d-655bcde14e1a', 'https://images.unsplash.com/photo-1758101755915-462eddc23f57', 'Circuito nuevo para la cocina', 179, now() - interval '1348 hours'),
+  ('e3c99673-9238-4fd2-8c91-2e7a1d42a323', '9ee75154-bc6c-4804-8b83-35eb90542227', 'https://images.unsplash.com/photo-1676311396794-f14881e9daaa', 'Puerta ajustada y bisagras nuevas', 260, now() - interval '83 hours'),
+  ('415804b7-12fc-486d-b6df-2d9c1aecbcdf', '9ee75154-bc6c-4804-8b83-35eb90542227', 'https://images.unsplash.com/photo-1633759593085-1eaeb724fc88', 'Closet armado en 1 hora 🛠️', 208, now() - interval '1345 hours'),
+  ('74e1343a-e395-4664-800a-66cb64d542a3', '9ee75154-bc6c-4804-8b83-35eb90542227', 'https://images.unsplash.com/photo-1562259929-b4e1fd3aef09', 'Trabajo terminado y limpio', 298, now() - interval '497 hours'),
+  ('80482b68-59f5-4e8a-8071-2261f870b58d', '433c2e40-5e69-4a36-96ca-b2ad28555751', 'https://images.unsplash.com/photo-1513467535987-fd81bc7d62f8', 'Puerta ajustada y bisagras nuevas', 208, now() - interval '889 hours'),
+  ('9f3326dd-9a6c-4076-a775-2c7f9e3121ef', '433c2e40-5e69-4a36-96ca-b2ad28555751', 'https://images.unsplash.com/photo-1645651964715-d200ce0939cc', 'Trabajo terminado y limpio', 448, now() - interval '1333 hours'),
+  ('6649dbf6-6edf-45a3-829c-a6e45280d8f5', '40f848b1-1350-4629-8a6d-cb12028a92a5', 'https://images.unsplash.com/photo-1676311396794-f14881e9daaa', 'Puerta ajustada y bisagras nuevas', 175, now() - interval '422 hours'),
+  ('28ab2871-0f59-4738-b3e7-7ffba8a9c5db', '40f848b1-1350-4629-8a6d-cb12028a92a5', 'https://images.unsplash.com/photo-1633759593085-1eaeb724fc88', 'Trabajo terminado y limpio', 284, now() - interval '89 hours'),
+  ('c1d910e2-76e0-4c98-912c-94f4c95060ca', '2212694b-5386-4035-a407-56bd97c88898', 'https://images.unsplash.com/photo-1648304887391-a6c2cf2228e4', 'Grupo pequeño, paseo tranquilo', 293, now() - interval '1298 hours'),
+  ('97645423-f40e-487e-892e-04ab4a51d807', '2212694b-5386-4035-a407-56bd97c88898', 'https://images.unsplash.com/photo-1599773952341-5f5d8d5433d6', 'Paseo de la tarde con Toby 🐶', 58, now() - interval '641 hours'),
+  ('35101494-73f6-4edb-9751-14130f043f8c', '56a6fe01-d0e1-4082-acbe-cff62e37a1ee', 'https://images.unsplash.com/photo-1618946019619-9d7b7d86b48f', 'Paseo por el parque Inés de Suárez', 118, now() - interval '1011 hours'),
+  ('5095bc49-cb1e-4cf4-8d54-12c93e025c67', '56a6fe01-d0e1-4082-acbe-cff62e37a1ee', 'https://images.unsplash.com/photo-1636998094055-ec16a40164f5', 'Después del baño quedó feliz', 283, now() - interval '516 hours'),
+  ('6bdc5d3c-0951-4899-95dd-9fe703155a87', '04a74629-0705-47e5-9a10-aca554f5f1eb', 'https://images.unsplash.com/photo-1587916369552-4c5b9b2fc3f5', 'Cuidando a Luna mientras sus dueños viajan', 131, now() - interval '531 hours'),
+  ('380bbc5b-403d-4f94-b1de-b72c56dc8db4', '04a74629-0705-47e5-9a10-aca554f5f1eb', 'https://images.unsplash.com/photo-1504199098938-e4bbcee5e4a9', 'Paseo de la tarde con Toby 🐶', 369, now() - interval '565 hours'),
+  ('d06d8a91-4805-4173-801c-bb438e7925ef', '04a74629-0705-47e5-9a10-aca554f5f1eb', 'https://images.unsplash.com/photo-1530700131180-d43d9b8cc41f', 'Después del baño quedó feliz', 184, now() - interval '1096 hours'),
+  ('991c2d63-bf61-4eb5-baa6-ec074eb2834d', '04a74629-0705-47e5-9a10-aca554f5f1eb', 'https://images.unsplash.com/photo-1648304887391-a6c2cf2228e4', 'Paseo de la tarde con Toby 🐶', 48, now() - interval '1041 hours'),
+  ('e479e8a2-3974-4794-a3f5-f2b91eb087d7', '022988b6-9151-4b81-b793-4b6fcf8cf948', 'https://images.unsplash.com/photo-1611239179213-d972da54091a', 'Lavado completo en el estacionamiento de la oficina 🚗', 215, now() - interval '15 hours'),
+  ('e469b064-61f5-4f73-bbee-08d81f2f752a', '022988b6-9151-4b81-b793-4b6fcf8cf948', 'https://images.unsplash.com/photo-1543857182-68106299b6b2', 'Lavado completo en el estacionamiento de la oficina 🚗', 342, now() - interval '966 hours'),
+  ('48bd0f32-bc02-4fe2-937c-7fdd938fc136', '5ecf1516-e771-422b-a212-460b401d2ace', 'https://images.unsplash.com/photo-1633014041037-f5446fb4ce99', 'Llantas impecables', 77, now() - interval '1111 hours'),
+  ('400fa13d-85a6-474a-8488-493ba00b814e', '5ecf1516-e771-422b-a212-460b401d2ace', 'https://images.unsplash.com/photo-1565689876697-e467b6c54da2', 'Lavado completo en el estacionamiento de la oficina 🚗', 71, now() - interval '440 hours'),
+  ('68e3f698-da3f-4f27-91c7-95e6f275d448', 'fdca69b1-6cf6-4837-9d55-8dc3b2d31058', 'https://images.unsplash.com/photo-1611239179213-d972da54091a', 'Pulido que recupera el brillo', 186, now() - interval '1400 hours'),
+  ('7884e14c-8965-4c01-81d2-e915e3a33b07', 'fdca69b1-6cf6-4837-9d55-8dc3b2d31058', 'https://images.unsplash.com/photo-1543857182-68106299b6b2', 'Lavado completo en el estacionamiento de la oficina 🚗', 202, now() - interval '651 hours'),
+  ('cc80666c-a1d1-49af-b86b-02c458d73194', '405c4cd2-0edd-4f15-8e5c-b5257cd00bfe', 'https://images.unsplash.com/photo-1614797091730-e2a6121aaa60', 'Apertura sin daño en 15 minutos', 76, now() - interval '746 hours'),
+  ('2df079a6-b9ac-46ea-9880-d864a57c3cba', '405c4cd2-0edd-4f15-8e5c-b5257cd00bfe', 'https://images.unsplash.com/photo-1707296916219-4f2d7529a4c5', 'Apertura sin daño en 15 minutos', 418, now() - interval '833 hours'),
+  ('c4690c6b-5b75-4198-b5b7-24ea2c14426c', '405c4cd2-0edd-4f15-8e5c-b5257cd00bfe', 'https://images.unsplash.com/photo-1707296916319-037ad32dc7f6', 'Urgencia resuelta un domingo en la noche', 372, now() - interval '360 hours'),
+  ('dc2a3caa-8df5-4e8e-859b-5fccc56689c6', 'e98639c7-d4ca-48a6-a6ee-63cfb4d6cdee', 'https://images.unsplash.com/photo-1756341782434-3020b9d17372', 'Urgencia resuelta un domingo en la noche', 266, now() - interval '750 hours'),
+  ('30c39e22-0de8-4d60-83a2-b0170cbe9abf', 'e98639c7-d4ca-48a6-a6ee-63cfb4d6cdee', 'https://images.unsplash.com/photo-1635237393049-55046279ebb8', 'Cambio de chapa de seguridad 🔑', 9, now() - interval '870 hours'),
+  ('40ca4636-b7a2-4e9f-9dcf-5ea78d47695e', '04668b65-f1f1-4c55-8331-2629af38bf28', 'https://images.unsplash.com/photo-1614797091730-e2a6121aaa60', 'Apertura sin daño en 15 minutos', 164, now() - interval '954 hours'),
+  ('5e923739-fbcf-4ecc-ba7a-153d6ed443e6', '04668b65-f1f1-4c55-8331-2629af38bf28', 'https://images.unsplash.com/photo-1707296916219-4f2d7529a4c5', 'Cambio de chapa de seguridad 🔑', 426, now() - interval '642 hours'),
+  ('3c1fa67d-69fc-4b2c-9864-8d9b14c36909', '04668b65-f1f1-4c55-8331-2629af38bf28', 'https://images.unsplash.com/photo-1707296916319-037ad32dc7f6', 'Urgencia resuelta un domingo en la noche', 224, now() - interval '230 hours'),
+  ('bce6c211-f7ba-4183-a3eb-2a86b0763fe6', '71bfbbbc-8ffa-40d6-9c39-7105ffe3e1e5', 'https://images.unsplash.com/photo-1517430816045-df4b7de11d1d', 'Respaldo de fotos antes del formateo', 363, now() - interval '57 hours'),
+  ('16a3af2a-2d8e-4b52-ba52-8257738cb040', '71bfbbbc-8ffa-40d6-9c39-7105ffe3e1e5', 'https://images.unsplash.com/photo-1541807084-5c52b6b3adef', 'Respaldo de fotos antes del formateo', 294, now() - interval '488 hours'),
+  ('1941e1b7-afa9-4205-b9ad-2ff0d7468dd0', '50ce16fb-2799-4d43-ae2d-a5967f81f013', 'https://images.unsplash.com/photo-1591238372338-22d30c883a86', 'Respaldo de fotos antes del formateo', 122, now() - interval '325 hours'),
+  ('c9b8f49f-97ac-4e58-927b-2abf7e335de8', '50ce16fb-2799-4d43-ae2d-a5967f81f013', 'https://images.unsplash.com/photo-1515378791036-0648a3ef77b2', 'Respaldo de fotos antes del formateo', 79, now() - interval '397 hours'),
+  ('f6f43c97-371a-493d-90d4-98f258a1060f', '50ce16fb-2799-4d43-ae2d-a5967f81f013', 'https://images.unsplash.com/photo-1547394765-185e1e68f34e', 'Respaldo de fotos antes del formateo', 339, now() - interval '614 hours'),
+  ('73ce1b25-654e-4034-8f90-a4598e2af875', '50ce16fb-2799-4d43-ae2d-a5967f81f013', 'https://images.unsplash.com/photo-1562408590-e32931084e23', 'Respaldo de fotos antes del formateo', 283, now() - interval '349 hours'),
+  ('fb13d9aa-8517-4891-a16c-b7f6a2ce4d0e', 'e34112bf-6af0-4c47-8603-c942f221b1d4', 'https://images.unsplash.com/photo-1541807084-5c52b6b3adef', 'Wifi en toda la casa con red mesh', 121, now() - interval '479 hours'),
+  ('94ca748f-94a9-4b06-869d-0619d9680f16', 'e34112bf-6af0-4c47-8603-c942f221b1d4', 'https://images.unsplash.com/photo-1721332154191-ba5f1534266e', 'Respaldo de fotos antes del formateo', 312, now() - interval '514 hours'),
+  ('0db91624-f356-447f-8db3-c167c901946d', 'e34112bf-6af0-4c47-8603-c942f221b1d4', 'https://images.unsplash.com/photo-1591238372338-22d30c883a86', 'PC de escritorio optimizado', 321, now() - interval '1221 hours'),
+  ('cd13a080-ee2d-479a-9343-ea0350b92062', '89dbd0a8-7a51-4002-bbb7-ad99a708f5cf', 'https://images.unsplash.com/photo-1758685733907-42e9651721f5', 'Materiales listos para la clase', 422, now() - interval '413 hours'),
+  ('6fb96c19-2eb2-4ad6-9bef-6a494cafb76b', '89dbd0a8-7a51-4002-bbb7-ad99a708f5cf', 'https://images.unsplash.com/photo-1522881193457-37ae97c905bf', 'Primera canción aprendida 🎸', 474, now() - interval '247 hours'),
+  ('31f20e39-31f7-4100-8477-b290a757e132', '0324286d-e54f-45e7-899c-a903fe574d0d', 'https://images.unsplash.com/photo-1758685848142-06e158cf64bc', 'Repasando ecuaciones para la prueba 📚', 348, now() - interval '1259 hours'),
+  ('161b32af-5980-492f-98a2-aa1b769ae6d4', '0324286d-e54f-45e7-899c-a903fe574d0d', 'https://images.unsplash.com/photo-1583468991267-3f068b607ae1', 'Ensayo PAES corregido', 131, now() - interval '522 hours'),
+  ('f9633cb7-141c-4a99-bbdd-5a5156299ec1', '0324286d-e54f-45e7-899c-a903fe574d0d', 'https://images.unsplash.com/photo-1629360067822-89c74b25bb66', 'Clase de conversación en inglés', 396, now() - interval '1154 hours'),
+  ('59d84db0-eb45-47c1-ac63-5633bd24b812', 'a9253c5b-225d-460c-99a5-00f50503d68e', 'https://images.unsplash.com/photo-1758685733907-42e9651721f5', 'Materiales listos para la clase', 194, now() - interval '708 hours'),
+  ('5f4548c0-399b-4cd7-bb39-306193daf150', 'a9253c5b-225d-460c-99a5-00f50503d68e', 'https://images.unsplash.com/photo-1522881193457-37ae97c905bf', 'Materiales listos para la clase', 335, now() - interval '1393 hours'),
+  ('56e51b55-eb36-4fcc-968b-9253613c0804', '45a9c520-9302-4711-8105-a1c34a03d3d5', 'https://images.unsplash.com/photo-1639162906614-0603b0ae95fd', 'Sesión descontracturante a domicilio 💆', 85, now() - interval '554 hours'),
+  ('2a75051d-2d77-45bb-a742-0cdc8c09118e', '45a9c520-9302-4711-8105-a1c34a03d3d5', 'https://images.unsplash.com/photo-1741522509438-a120c0bb5e88', 'Rehabilitación de rodilla, semana 3', 429, now() - interval '1301 hours'),
+  ('58d67ea3-ac91-44cd-a226-7ae135da2482', '45a9c520-9302-4711-8105-a1c34a03d3d5', 'https://images.unsplash.com/photo-1675159364615-38e1f6b62282', 'Sesión descontracturante a domicilio 💆', 318, now() - interval '1275 hours'),
+  ('2f2db221-770f-471a-8ccc-a85dd5bb9ccd', '45a9c520-9302-4711-8105-a1c34a03d3d5', 'https://images.unsplash.com/photo-1519824145371-296894a0daa9', 'Camilla lista, música y aromaterapia', 455, now() - interval '266 hours'),
+  ('52a7c0b7-250d-4e42-9504-8bd1995a69d3', '004d8d8b-bde9-4d79-b8b0-043cebeb3b19', 'https://images.unsplash.com/photo-1519823551278-64ac92734fb1', 'Reflexología para cerrar la semana', 55, now() - interval '1298 hours'),
+  ('eafc32de-a14b-4576-bdd5-03c52d1e3ed0', '004d8d8b-bde9-4d79-b8b0-043cebeb3b19', 'https://images.unsplash.com/photo-1611073615830-9f76902c10fe', 'Masaje de piernas después del maratón', 438, now() - interval '1056 hours'),
+  ('30d42916-fb0a-42fc-8ef3-a2273a3f6ef7', '004d8d8b-bde9-4d79-b8b0-043cebeb3b19', 'https://images.unsplash.com/photo-1706795033728-9232ef548a16', 'Camilla lista, música y aromaterapia', 359, now() - interval '1027 hours'),
+  ('18ff365e-8297-41a9-a8ac-dc47ce7f5e24', 'e8db3107-9731-426a-95c8-b7b209fda5df', 'https://images.unsplash.com/photo-1745327883508-b6cd32e5dde5', 'Camilla lista, música y aromaterapia', 391, now() - interval '967 hours'),
+  ('0278de58-2286-45f4-b37e-83edd9981f91', 'e8db3107-9731-426a-95c8-b7b209fda5df', 'https://images.unsplash.com/photo-1639162906614-0603b0ae95fd', 'Reflexología para cerrar la semana', 334, now() - interval '77 hours'),
+  ('cf913bf9-a14d-4071-ac18-6536ebe1ecfa', 'e8db3107-9731-426a-95c8-b7b209fda5df', 'https://images.unsplash.com/photo-1741522509438-a120c0bb5e88', 'Masaje de piernas después del maratón', 400, now() - interval '421 hours'),
+  ('f0d928de-be2e-41eb-9601-0f408add70ce', 'e8db3107-9731-426a-95c8-b7b209fda5df', 'https://images.unsplash.com/photo-1675159364615-38e1f6b62282', 'Sesión descontracturante a domicilio 💆', 24, now() - interval '1242 hours'),
+  ('79e88d4d-ffb2-4912-8f00-8f67255231e8', 'e93239c1-2cbc-4c1c-8806-9ce82065a391', 'https://images.unsplash.com/photo-1738523686534-7055df5858d6', 'Entrenamiento funcional en el living 🏋️', 341, now() - interval '237 hours'),
+  ('d4158b69-57cf-45eb-a7e8-444beea5205c', 'e93239c1-2cbc-4c1c-8806-9ce82065a391', 'https://images.unsplash.com/photo-1674834727149-00812f907676', 'Rutina lista para la semana', 78, now() - interval '622 hours'),
+  ('9b1161a7-45c4-488d-9d71-a964f20811b8', 'e93239c1-2cbc-4c1c-8806-9ce82065a391', 'https://images.unsplash.com/photo-1536922246289-88c42f957773', 'Sesión de fuerza con el cliente', 313, now() - interval '1188 hours'),
+  ('473eadc3-8e94-4d09-9dc0-fbffeac190dd', 'e93239c1-2cbc-4c1c-8806-9ce82065a391', 'https://images.unsplash.com/photo-1648542036561-e1d66a5ae2b1', 'Estiramientos después de entrenar', 225, now() - interval '1133 hours'),
+  ('75570f1e-8c7e-488b-863f-72738cc710e8', '384f9f55-6774-47b8-bda5-60b2e5de04d3', 'https://images.unsplash.com/photo-1534258936925-c58bed479fcb', 'Entrenamiento funcional en el living 🏋️', 91, now() - interval '1079 hours'),
+  ('764c0fc5-bb99-498d-86dc-129e1209dce3', '384f9f55-6774-47b8-bda5-60b2e5de04d3', 'https://images.unsplash.com/photo-1571019614242-c5c5dee9f50b', 'Rutina lista para la semana', 109, now() - interval '123 hours'),
+  ('121159ed-7e3f-4ca7-8144-be534bb9e453', '91a90c87-f01b-4b22-b9bd-810c3d9d4a8e', 'https://images.unsplash.com/photo-1674834727149-00812f907676', 'Estiramientos después de entrenar', 332, now() - interval '789 hours'),
+  ('6fdda3b3-a712-4042-a41d-087faaf527bc', '91a90c87-f01b-4b22-b9bd-810c3d9d4a8e', 'https://images.unsplash.com/photo-1536922246289-88c42f957773', 'Rutina lista para la semana', 73, now() - interval '211 hours'),
+  ('58b45dc1-cde2-427c-8962-7d622a77ae6e', '91a90c87-f01b-4b22-b9bd-810c3d9d4a8e', 'https://images.unsplash.com/photo-1648542036561-e1d66a5ae2b1', 'Estiramientos después de entrenar', 428, now() - interval '50 hours'),
+  ('c9284fc0-7e53-4f3a-b605-f7f666389748', '91a90c87-f01b-4b22-b9bd-810c3d9d4a8e', 'https://images.unsplash.com/photo-1540206276207-3af25c08abc4', 'Sesión de fuerza con el cliente', 343, now() - interval '331 hours'),
+  ('e5e610f2-6317-4ca8-83be-cbb5ac03be5d', 'cf7a1244-29c8-47e2-897c-47404773c041', 'https://images.unsplash.com/photo-1616432043562-3671ea2e5242', 'Refrigerador trasladado sin un rasguño', 167, now() - interval '247 hours'),
+  ('1b7214c2-52a4-4ce9-bb8b-2e0ad55473f6', 'cf7a1244-29c8-47e2-897c-47404773c041', 'https://images.unsplash.com/photo-1592838064575-70ed626d3a0e', 'Camioneta lista para salir', 55, now() - interval '864 hours'),
+  ('8b4b1fed-cf6c-4876-8621-dad0bd35cabe', 'cf7a1244-29c8-47e2-897c-47404773c041', 'https://images.unsplash.com/photo-1601467995997-ac1ae9a8fff4', 'Cajas embaladas y rotuladas', 441, now() - interval '193 hours'),
+  ('fa8f3c60-dbc2-4cf8-8794-ce696942d07f', '84dbb6b8-354c-4d2b-af7e-6ed591ccccdf', 'https://images.unsplash.com/photo-1605705658744-45f0fe8f9663', 'Camioneta lista para salir', 407, now() - interval '1351 hours'),
+  ('d66d1b1a-71ac-42fa-bfff-69e9007def19', '84dbb6b8-354c-4d2b-af7e-6ed591ccccdf', 'https://images.unsplash.com/photo-1616432043562-3671ea2e5242', 'Camioneta lista para salir', 323, now() - interval '158 hours'),
+  ('8b5a0413-1d62-48fa-8300-aa2a6bc2154c', '038dc3e5-a685-4217-a4ac-f8381db74622', 'https://images.unsplash.com/photo-1601467995997-ac1ae9a8fff4', 'Cajas embaladas y rotuladas', 459, now() - interval '309 hours'),
+  ('f57c1106-1596-46ef-9ee5-6e9c5b51a16c', '038dc3e5-a685-4217-a4ac-f8381db74622', 'https://images.unsplash.com/photo-1586781383963-8e66f88077ec', 'Flete desde el Sodimac al depto', 357, now() - interval '961 hours'),
+  ('4d330a5a-0a98-495f-92d8-2103e1d789e6', '038dc3e5-a685-4217-a4ac-f8381db74622', 'https://images.unsplash.com/photo-1605705658744-45f0fe8f9663', 'Cajas embaladas y rotuladas', 195, now() - interval '954 hours')
+on conflict (id) do update set image_url = excluded.image_url, caption = excluded.caption;
+
+-- Reseñas de ejemplo
+insert into public.reviews (id, provider_id, author_name, author_avatar, rating, comment, created_at) values
+  ('31856160-479e-41ec-affc-3546d53783a1', '5d71952f-95de-4168-83ea-43094b25a1cb', 'Carolina W.', 'https://randomuser.me/api/portraits/men/47.jpg', 5, 'Lo contraté un sábado y llegó en menos de una hora. Impecable.', now() - interval '711 hours'),
+  ('0641c2bb-4d29-436f-9ae0-d4650511974f', '5d71952f-95de-4168-83ea-43094b25a1cb', 'Sebastián Y.', 'https://randomuser.me/api/portraits/men/36.jpg', 5, 'Muy profesional. Reservar por la app fue facilísimo.', now() - interval '911 hours'),
+  ('c9a06a9b-b4bf-4495-9839-37270bc0e3c6', '5d71952f-95de-4168-83ea-43094b25a1cb', 'Tomás R.', 'https://randomuser.me/api/portraits/women/77.jpg', 5, 'Muy buena poda, el jardín quedó precioso.', now() - interval '172 hours'),
+  ('265ae064-ed9e-4ac4-b5b4-75ef267ff22c', '5d71952f-95de-4168-83ea-43094b25a1cb', 'Emilia T.', null, 5, 'Atento a cada detalle. De los mejores que he contratado.', now() - interval '851 hours'),
+  ('b4fcb1c8-6050-4b85-8b54-8ed84b4cf393', '97dd5002-e9b3-49ed-982c-1f32046cbff7', 'Rodrigo Z.', 'https://randomuser.me/api/portraits/men/23.jpg', 5, 'Súper puntual y muy amable. Lo recomiendo 100%.', now() - interval '1233 hours'),
+  ('22c888d9-c291-4571-a885-178fb419a30c', '97dd5002-e9b3-49ed-982c-1f32046cbff7', 'Josefa M.', 'https://randomuser.me/api/portraits/men/89.jpg', 4, 'Buen trabajo, se demoró un poco más de lo previsto pero quedó bien.', now() - interval '106 hours'),
+  ('15f1b9c5-0968-48b1-9b22-bfd84e791aa0', '97dd5002-e9b3-49ed-982c-1f32046cbff7', 'Joaquín B.', 'https://randomuser.me/api/portraits/men/13.jpg', 4, 'Muy bien en general, buena comunicación por el chat.', now() - interval '1530 hours'),
+  ('d7e22ae0-88fe-4257-8e30-b46bddc6d85f', '97dd5002-e9b3-49ed-982c-1f32046cbff7', 'Carolina W.', null, 5, 'Muy buena poda, el jardín quedó precioso.', now() - interval '117 hours'),
+  ('d990d6af-eb30-4ed4-b95d-91a7d35ae2f8', '7197e33c-da06-4cff-a0ef-ee2dc7245e42', 'Cristóbal E.', 'https://randomuser.me/api/portraits/women/82.jpg', 5, 'Atento a cada detalle. De los mejores que he contratado.', now() - interval '1705 hours'),
+  ('60c7dd3a-222b-4b36-98cc-5f8e1178ec11', '7197e33c-da06-4cff-a0ef-ee2dc7245e42', 'Paula K.', null, 3, 'Cumplió, aunque llegó 20 minutos tarde.', now() - interval '774 hours'),
+  ('6278e03d-f28d-4e74-b5b7-1d60c29013f7', '7197e33c-da06-4cff-a0ef-ee2dc7245e42', 'Florencia L.', null, 5, 'Excelente trabajo, llegó a la hora y dejó todo limpio.', now() - interval '1369 hours'),
+  ('dbac93ac-98a7-4b11-b941-aedc6df4212c', '7197e33c-da06-4cff-a0ef-ee2dc7245e42', 'Agustín V.', 'https://randomuser.me/api/portraits/men/95.jpg', 5, 'Muy profesional. Reservar por la app fue facilísimo.', now() - interval '1299 hours'),
+  ('02b8b32e-4276-4068-8ccd-24323e80b8d0', '7197e33c-da06-4cff-a0ef-ee2dc7245e42', 'Amanda Q.', 'https://randomuser.me/api/portraits/women/31.jpg', 5, 'Muy buena poda, el jardín quedó precioso.', now() - interval '910 hours'),
+  ('d0702818-4451-48c6-8bc9-0707143b3925', '7197e33c-da06-4cff-a0ef-ee2dc7245e42', 'Ignacio X.', 'https://randomuser.me/api/portraits/men/32.jpg', 5, 'Lo contraté un sábado y llegó en menos de una hora. Impecable.', now() - interval '1838 hours'),
+  ('284a1ecf-cbeb-4fc0-b2be-aa9bf33e8bbd', '7197e33c-da06-4cff-a0ef-ee2dc7245e42', 'Carolina W.', null, 5, 'Súper puntual y muy amable. Lo recomiendo 100%.', now() - interval '1741 hours'),
+  ('4cb43550-c104-47b1-9408-74bae7842e41', 'd9c1a3d8-172c-4c9f-8188-2d9ce7a53bf9', 'Catalina S.', 'https://randomuser.me/api/portraits/women/94.jpg', 4, 'Buen trabajo, se demoró un poco más de lo previsto pero quedó bien.', now() - interval '939 hours'),
+  ('a6769ff0-5ef7-41dd-bbca-7a5d2f78ef34', 'd9c1a3d8-172c-4c9f-8188-2d9ce7a53bf9', 'Gaspar I.', 'https://randomuser.me/api/portraits/men/50.jpg', 5, 'Súper puntual y muy amable. Lo recomiendo 100%.', now() - interval '727 hours'),
+  ('c0c12bfe-24ac-4f92-a300-0089b3c3c3d8', 'd9c1a3d8-172c-4c9f-8188-2d9ce7a53bf9', 'Emilia T.', null, 5, 'Precio justo y muy buena disposición. Volveré a contratar.', now() - interval '561 hours'),
+  ('619cfbf9-d070-4e20-b996-43be0f9717c2', 'd9c1a3d8-172c-4c9f-8188-2d9ce7a53bf9', 'Cristóbal E.', 'https://randomuser.me/api/portraits/women/86.jpg', 5, 'Quedé feliz con el resultado. Gracias!', now() - interval '470 hours'),
+  ('6de4a7b2-8376-49b9-9369-11cc7a94f218', '4c27a439-86ff-4d62-9263-2e766ca3c848', 'Catalina S.', 'https://randomuser.me/api/portraits/women/65.jpg', 5, 'Muy profesional. Reservar por la app fue facilísimo.', now() - interval '279 hours'),
+  ('99eafd4e-da30-492b-ade7-75f40f6ce0be', '4c27a439-86ff-4d62-9263-2e766ca3c848', 'Lucas N.', null, 5, 'Atento a cada detalle. De los mejores que he contratado.', now() - interval '517 hours'),
+  ('b030b177-a46e-46b9-9c6f-de9fbd344773', '4c27a439-86ff-4d62-9263-2e766ca3c848', 'Ignacio X.', null, 5, 'Súper puntual y muy amable. Lo recomiendo 100%.', now() - interval '255 hours'),
+  ('312d2b1b-f193-4580-8d0e-371d1e3216eb', '4c27a439-86ff-4d62-9263-2e766ca3c848', 'Florencia L.', null, 4, 'Muy bien en general, buena comunicación por el chat.', now() - interval '1468 hours'),
+  ('239db617-b9ee-4ad5-8b18-27861e44d8e2', '4c27a439-86ff-4d62-9263-2e766ca3c848', 'Renata U.', null, 5, 'Me cambió el aceite en el estacionamiento de mi edificio en 40 minutos.', now() - interval '622 hours'),
+  ('0f850ab9-cf7e-476a-b108-7a5b517d8626', '4c27a439-86ff-4d62-9263-2e766ca3c848', 'Gaspar I.', 'https://randomuser.me/api/portraits/men/28.jpg', 5, 'Lo contraté un sábado y llegó en menos de una hora. Impecable.', now() - interval '701 hours'),
+  ('375f9f23-6635-4296-a145-ef6f75798d11', '4c27a439-86ff-4d62-9263-2e766ca3c848', 'Martina G.', 'https://randomuser.me/api/portraits/men/40.jpg', 5, 'Encontró la falla con el scanner al tiro. Muy honesto.', now() - interval '448 hours'),
+  ('0f2f87d4-072e-4262-9e9c-f76415d848e3', '6c027df6-274d-44e2-9b43-fb580d738756', 'Isidora P.', 'https://randomuser.me/api/portraits/women/49.jpg', 4, 'Buen trabajo, se demoró un poco más de lo previsto pero quedó bien.', now() - interval '1809 hours'),
+  ('5919ee0e-55b2-4519-839c-cb85e20b690e', '6c027df6-274d-44e2-9b43-fb580d738756', 'Renata U.', 'https://randomuser.me/api/portraits/men/69.jpg', 5, 'Excelente trabajo, llegó a la hora y dejó todo limpio.', now() - interval '930 hours'),
+  ('173138bc-a4ff-4ed0-a87e-24a590cb47d5', '6c027df6-274d-44e2-9b43-fb580d738756', 'Emilia T.', 'https://randomuser.me/api/portraits/men/9.jpg', 5, 'Me cambió el aceite en el estacionamiento de mi edificio en 40 minutos.', now() - interval '470 hours'),
+  ('a27d3597-eb7f-40d6-9ece-a5acc6fa42bb', '6c027df6-274d-44e2-9b43-fb580d738756', 'Ignacio X.', 'https://randomuser.me/api/portraits/men/21.jpg', 4, 'Muy bien en general, buena comunicación por el chat.', now() - interval '1659 hours'),
+  ('f45136fd-0ca9-4e74-b23d-de60a9078cf4', '6c027df6-274d-44e2-9b43-fb580d738756', 'Josefa M.', null, 5, 'Precio justo y muy buena disposición. Volveré a contratar.', now() - interval '990 hours'),
+  ('beffa2e8-d328-455a-93fd-308031b56ff0', 'd7665b14-0cca-458a-bd35-94e7aa5dc48f', 'Maximiliano D.', null, 5, 'Excelente trabajo, llegó a la hora y dejó todo limpio.', now() - interval '1130 hours'),
+  ('9a47293b-ac1f-482a-ad4f-0a3251bbe4e6', 'd7665b14-0cca-458a-bd35-94e7aa5dc48f', 'Gaspar I.', null, 4, 'Buen trabajo, se demoró un poco más de lo previsto pero quedó bien.', now() - interval '1423 hours'),
+  ('47b1b174-4b73-4889-8a39-bd99ed50e84a', 'd7665b14-0cca-458a-bd35-94e7aa5dc48f', 'Vicente O.', 'https://randomuser.me/api/portraits/women/23.jpg', 5, 'Lo contraté un sábado y llegó en menos de una hora. Impecable.', now() - interval '641 hours'),
+  ('03c0a6a4-6ee5-4db9-ad62-bf6ff2e72477', 'd7665b14-0cca-458a-bd35-94e7aa5dc48f', 'Carolina W.', 'https://randomuser.me/api/portraits/women/5.jpg', 3, 'Cumplió, aunque llegó 20 minutos tarde.', now() - interval '543 hours'),
+  ('e58e83dd-e6e6-428e-835d-1ec301656a58', 'eaf1c674-7440-4b31-a730-3bac63afcd67', 'Josefa M.', 'https://randomuser.me/api/portraits/women/53.jpg', 5, 'El mejor fade que me han hecho y sin moverme de la casa.', now() - interval '47 hours'),
+  ('afb0fd96-db12-466d-b677-053440037a0a', 'eaf1c674-7440-4b31-a730-3bac63afcd67', 'Renata U.', 'https://randomuser.me/api/portraits/men/81.jpg', 5, 'Lo contraté un sábado y llegó en menos de una hora. Impecable.', now() - interval '286 hours'),
+  ('5cc27302-381b-4353-9d5d-d036ca8945a6', 'eaf1c674-7440-4b31-a730-3bac63afcd67', 'Joaquín B.', null, 5, 'Muy profesional. Reservar por la app fue facilísimo.', now() - interval '770 hours'),
+  ('97f26d42-b72d-485f-bd6f-ca619290bf7b', 'eaf1c674-7440-4b31-a730-3bac63afcd67', 'Antonia F.', 'https://randomuser.me/api/portraits/men/88.jpg', 5, 'Súper puntual y muy amable. Lo recomiendo 100%.', now() - interval '87 hours'),
+  ('5d8976c0-c9f2-41e8-9289-003ff27b0bd2', 'eaf1c674-7440-4b31-a730-3bac63afcd67', 'Catalina S.', 'https://randomuser.me/api/portraits/women/75.jpg', 5, 'Precio justo y muy buena disposición. Volveré a contratar.', now() - interval '1616 hours'),
+  ('bd516f78-bbfc-40a6-b882-c20e8d7ebd1e', 'eaf1c674-7440-4b31-a730-3bac63afcd67', 'Ignacio X.', 'https://randomuser.me/api/portraits/men/56.jpg', 5, 'Excelente trabajo, llegó a la hora y dejó todo limpio.', now() - interval '24 hours'),
+  ('45f948bb-5429-441c-b450-75ae7dc64483', 'eaf1c674-7440-4b31-a730-3bac63afcd67', 'Fernanda J.', null, 5, 'Atento a cada detalle. De los mejores que he contratado.', now() - interval '357 hours'),
+  ('21a9c115-baf0-48ad-9f09-8700e65c7231', '6440560d-e728-4a57-846d-274d5df9de11', 'Fernanda J.', null, 4, 'Muy bien en general, buena comunicación por el chat.', now() - interval '853 hours'),
+  ('62cb6e01-c237-4410-8eb0-617153b6786a', '6440560d-e728-4a57-846d-274d5df9de11', 'Josefa M.', null, 5, 'Muy profesional. Reservar por la app fue facilísimo.', now() - interval '731 hours'),
+  ('963366a0-a34a-45b6-9138-c0ae0caf0eb4', '6440560d-e728-4a57-846d-274d5df9de11', 'Renata U.', 'https://randomuser.me/api/portraits/men/78.jpg', 5, 'Excelente trabajo, llegó a la hora y dejó todo limpio.', now() - interval '1247 hours'),
+  ('20c0d345-16ce-4c28-bd10-5a3f0fb77daf', '6440560d-e728-4a57-846d-274d5df9de11', 'Paula K.', null, 5, 'Quedé feliz con el resultado. Gracias!', now() - interval '787 hours'),
+  ('25b817bd-0fff-41b4-b941-4283cb3351d6', '30b96d13-d742-4d87-a8c2-8b57d556fd4d', 'Benjamín C.', 'https://randomuser.me/api/portraits/women/68.jpg', 5, 'Precio justo y muy buena disposición. Volveré a contratar.', now() - interval '920 hours'),
+  ('20db51a6-45ef-4862-be79-e096d68e39b8', '30b96d13-d742-4d87-a8c2-8b57d556fd4d', 'Agustín V.', null, 3, 'Cumplió, aunque llegó 20 minutos tarde.', now() - interval '631 hours'),
+  ('c4de93cd-32d1-4a74-9964-b7ffbbe0b8d3', '30b96d13-d742-4d87-a8c2-8b57d556fd4d', 'Josefa M.', 'https://randomuser.me/api/portraits/men/8.jpg', 5, 'Lo contraté un sábado y llegó en menos de una hora. Impecable.', now() - interval '1582 hours'),
+  ('bb2f46b5-b03a-4f21-9c1f-8207b4ddf8cd', '30b96d13-d742-4d87-a8c2-8b57d556fd4d', 'Cristóbal E.', 'https://randomuser.me/api/portraits/men/29.jpg', 4, 'Buen trabajo, se demoró un poco más de lo previsto pero quedó bien.', now() - interval '1817 hours'),
+  ('095492d0-32e4-4378-9af4-a46b1a19710d', '30b96d13-d742-4d87-a8c2-8b57d556fd4d', 'Felipe A.', null, 5, 'Quedé feliz con el resultado. Gracias!', now() - interval '1393 hours'),
+  ('2a22615a-f722-4f18-ab9f-683de1b86d20', '30b96d13-d742-4d87-a8c2-8b57d556fd4d', 'Vicente O.', 'https://randomuser.me/api/portraits/women/92.jpg', 5, 'Excelente trabajo, llegó a la hora y dejó todo limpio.', now() - interval '832 hours'),
+  ('1b02b1e9-a84d-4755-9fab-73a06a503c68', '510722d6-14c0-4a53-be41-04f809905d8f', 'Joaquín B.', 'https://randomuser.me/api/portraits/men/71.jpg', 5, 'Lo contraté un sábado y llegó en menos de una hora. Impecable.', now() - interval '1001 hours'),
+  ('381c1143-2ef7-423e-9e64-0ec8cb698738', '510722d6-14c0-4a53-be41-04f809905d8f', 'Gaspar I.', null, 4, 'Buen trabajo, se demoró un poco más de lo previsto pero quedó bien.', now() - interval '734 hours'),
+  ('2f79127f-2456-41e1-821c-185d7a2a09f4', '510722d6-14c0-4a53-be41-04f809905d8f', 'Vicente O.', null, 5, 'Me maquilló para un matrimonio y quedé feliz.', now() - interval '1065 hours'),
+  ('53367b53-4ae8-4eda-88bc-82d65a8ea630', '510722d6-14c0-4a53-be41-04f809905d8f', 'Renata U.', null, 5, 'Muy profesional. Reservar por la app fue facilísimo.', now() - interval '1437 hours'),
+  ('da0d94c2-7576-4cab-92cf-a3b6a6e2fb2b', 'a126a1a2-e8e0-40e6-8709-31a593bd54c4', 'Josefa M.', 'https://randomuser.me/api/portraits/women/20.jpg', 5, 'Me maquilló para un matrimonio y quedé feliz.', now() - interval '1124 hours'),
+  ('4b37a24c-fc36-4c2a-817c-01614e190ff0', 'a126a1a2-e8e0-40e6-8709-31a593bd54c4', 'Martina G.', 'https://randomuser.me/api/portraits/women/1.jpg', 5, 'Quedé feliz con el resultado. Gracias!', now() - interval '1346 hours'),
+  ('eac6acd2-0deb-4ddd-9328-9503ace977e1', 'a126a1a2-e8e0-40e6-8709-31a593bd54c4', 'Joaquín B.', 'https://randomuser.me/api/portraits/men/31.jpg', 5, 'Atento a cada detalle. De los mejores que he contratado.', now() - interval '118 hours'),
+  ('390f1c58-524b-46eb-ad06-6e37eabb1903', 'a126a1a2-e8e0-40e6-8709-31a593bd54c4', 'Lucas N.', null, 5, 'Muy profesional. Reservar por la app fue facilísimo.', now() - interval '750 hours'),
+  ('a13c4df4-9e13-4bbe-8831-c1ac92729ce0', 'a126a1a2-e8e0-40e6-8709-31a593bd54c4', 'Tomás R.', 'https://randomuser.me/api/portraits/women/75.jpg', 4, 'Muy bien en general, buena comunicación por el chat.', now() - interval '1150 hours'),
+  ('c1b941a5-44d4-4de0-b241-4cc7d536b78b', 'a126a1a2-e8e0-40e6-8709-31a593bd54c4', 'Agustín V.', 'https://randomuser.me/api/portraits/women/77.jpg', 5, 'Precio justo y muy buena disposición. Volveré a contratar.', now() - interval '1069 hours'),
+  ('8c171fa8-a05f-4bbd-890b-cffe6ed01aaf', 'a126a1a2-e8e0-40e6-8709-31a593bd54c4', 'Renata U.', 'https://randomuser.me/api/portraits/men/54.jpg', 5, 'Súper puntual y muy amable. Lo recomiendo 100%.', now() - interval '1635 hours'),
+  ('5005d3e1-3e4f-45fc-b21a-815290ba7994', '04a03d6c-390d-412f-9b8b-e1b0fc84184c', 'Lucas N.', null, 5, 'Súper puntual y muy amable. Lo recomiendo 100%.', now() - interval '1639 hours'),
+  ('d68677f4-284f-4c2b-8037-141795e85f9f', '04a03d6c-390d-412f-9b8b-e1b0fc84184c', 'Agustín V.', 'https://randomuser.me/api/portraits/men/32.jpg', 5, 'Muy profesional. Reservar por la app fue facilísimo.', now() - interval '1191 hours'),
+  ('628a7243-f630-49dd-85e9-55366614aa8c', '04a03d6c-390d-412f-9b8b-e1b0fc84184c', 'Renata U.', null, 3, 'Cumplió, aunque llegó 20 minutos tarde.', now() - interval '612 hours'),
+  ('6318eab6-3da8-492d-ab0c-0e19cc9a8298', '04a03d6c-390d-412f-9b8b-e1b0fc84184c', 'Fernanda J.', 'https://randomuser.me/api/portraits/men/6.jpg', 5, 'El sofá quedó como nuevo, increíble.', now() - interval '775 hours'),
+  ('f66b90f9-5900-4cb3-98c1-a8479aeb0cc3', '6d90ed63-a3f1-4ad7-b7df-11bbefdd808d', 'Trinidad H.', 'https://randomuser.me/api/portraits/men/21.jpg', 5, 'Muy profesional. Reservar por la app fue facilísimo.', now() - interval '1862 hours'),
+  ('e17de39a-c08e-447b-8f17-b0e12ff8401f', '6d90ed63-a3f1-4ad7-b7df-11bbefdd808d', 'Vicente O.', null, 5, 'El depto quedó brillando. Muy detallista.', now() - interval '667 hours'),
+  ('248768ae-5ea6-43bb-b743-ebfec4fd12d0', '6d90ed63-a3f1-4ad7-b7df-11bbefdd808d', 'Felipe A.', null, 5, 'Atento a cada detalle. De los mejores que he contratado.', now() - interval '1533 hours'),
+  ('f7825753-35a9-43f9-9bbc-e587fd3f7025', '6d90ed63-a3f1-4ad7-b7df-11bbefdd808d', 'Martina G.', 'https://randomuser.me/api/portraits/women/61.jpg', 5, 'Precio justo y muy buena disposición. Volveré a contratar.', now() - interval '1336 hours'),
+  ('c30b5dd5-dc8e-48c1-b015-7771293c6a52', '6d90ed63-a3f1-4ad7-b7df-11bbefdd808d', 'Josefa M.', null, 5, 'Lo contraté un sábado y llegó en menos de una hora. Impecable.', now() - interval '726 hours'),
+  ('358c154a-71a8-4901-ada4-107467c05e18', '6d90ed63-a3f1-4ad7-b7df-11bbefdd808d', 'Amanda Q.', null, 5, 'Quedé feliz con el resultado. Gracias!', now() - interval '649 hours'),
+  ('1914d1c8-8aca-4503-b2a9-a8b1f6fa9be3', '6d90ed63-a3f1-4ad7-b7df-11bbefdd808d', 'Sebastián Y.', 'https://randomuser.me/api/portraits/men/91.jpg', 5, 'El sofá quedó como nuevo, increíble.', now() - interval '1491 hours'),
+  ('229b9cfe-d502-4b9c-bbe6-cbb7fa4b27c5', 'bc5d2e20-ff73-4cd3-a8a9-394d8b797600', 'Vicente O.', 'https://randomuser.me/api/portraits/women/76.jpg', 5, 'Súper puntual y muy amable. Lo recomiendo 100%.', now() - interval '1144 hours'),
+  ('3eed02af-e151-4c0a-84b1-a7f7c9e1c6a3', 'bc5d2e20-ff73-4cd3-a8a9-394d8b797600', 'Antonia F.', 'https://randomuser.me/api/portraits/women/21.jpg', 5, 'El sofá quedó como nuevo, increíble.', now() - interval '1325 hours'),
+  ('ca9789d0-905e-440a-9cb0-610053dbdca6', 'bc5d2e20-ff73-4cd3-a8a9-394d8b797600', 'Felipe A.', 'https://randomuser.me/api/portraits/men/62.jpg', 5, 'Quedé feliz con el resultado. Gracias!', now() - interval '704 hours'),
+  ('a0dab008-404f-472c-93e1-41f0e15b4186', 'bc5d2e20-ff73-4cd3-a8a9-394d8b797600', 'Agustín V.', 'https://randomuser.me/api/portraits/men/23.jpg', 5, 'Muy profesional. Reservar por la app fue facilísimo.', now() - interval '266 hours'),
+  ('585b6c66-05f4-4c9e-a81c-c347bb6c0093', '89a16328-c475-4c8f-9ed4-984459932f65', 'Emilia T.', null, 5, 'Quedé feliz con el resultado. Gracias!', now() - interval '615 hours'),
+  ('cc3175ea-3dfb-41d8-83f4-ace5550be115', '89a16328-c475-4c8f-9ed4-984459932f65', 'Cristóbal E.', 'https://randomuser.me/api/portraits/men/16.jpg', 5, 'Súper puntual y muy amable. Lo recomiendo 100%.', now() - interval '1205 hours'),
+  ('3e9815a9-3fd5-4489-8b3e-cc4e09329ad1', '89a16328-c475-4c8f-9ed4-984459932f65', 'Paula K.', 'https://randomuser.me/api/portraits/women/84.jpg', 5, 'Excelente trabajo, llegó a la hora y dejó todo limpio.', now() - interval '1827 hours'),
+  ('c82058f2-0a69-42ab-b957-fcbb8bb5a6f2', '89a16328-c475-4c8f-9ed4-984459932f65', 'Gaspar I.', 'https://randomuser.me/api/portraits/men/59.jpg', 4, 'Buen trabajo con el destape, precio razonable.', now() - interval '381 hours'),
+  ('5c6c44a3-fb0c-41f4-bb8c-f2f3db107f83', '89a16328-c475-4c8f-9ed4-984459932f65', 'Josefa M.', 'https://randomuser.me/api/portraits/men/6.jpg', 4, 'Muy bien en general, buena comunicación por el chat.', now() - interval '404 hours'),
+  ('21ec7fc2-4fd4-4cd3-9ac8-b366e3b177ee', '3d53da8f-5814-4897-8d69-cdbe8187429a', 'Sebastián Y.', 'https://randomuser.me/api/portraits/men/59.jpg', 5, 'Excelente trabajo, llegó a la hora y dejó todo limpio.', now() - interval '64 hours'),
+  ('b28cc1d9-abdd-46e0-8a6f-db7b16ac9fe4', '3d53da8f-5814-4897-8d69-cdbe8187429a', 'Joaquín B.', null, 5, 'Atento a cada detalle. De los mejores que he contratado.', now() - interval '1280 hours'),
+  ('528ecc17-2263-4a29-83be-441958af5a5a', '3d53da8f-5814-4897-8d69-cdbe8187429a', 'Trinidad H.', 'https://randomuser.me/api/portraits/women/51.jpg', 4, 'Buen trabajo con el destape, precio razonable.', now() - interval '165 hours'),
+  ('4147244b-d0e2-49c9-9d03-a255b0ce5733', '3d53da8f-5814-4897-8d69-cdbe8187429a', 'Martina G.', null, 5, 'Súper puntual y muy amable. Lo recomiendo 100%.', now() - interval '1817 hours'),
+  ('cf6259ec-1065-4cd0-b331-ee7be01cb41f', '3d53da8f-5814-4897-8d69-cdbe8187429a', 'Florencia L.', null, 5, 'Quedé feliz con el resultado. Gracias!', now() - interval '578 hours'),
+  ('8a6bd795-0836-401f-b6ff-46eb4497177d', '89df9695-6006-4ccd-883a-83660f5144dd', 'Florencia L.', 'https://randomuser.me/api/portraits/women/41.jpg', 4, 'Buen trabajo, se demoró un poco más de lo previsto pero quedó bien.', now() - interval '191 hours'),
+  ('066d75d2-43e3-44cf-bda9-31aebc5fc3d6', '89df9695-6006-4ccd-883a-83660f5144dd', 'Trinidad H.', null, 3, 'Cumplió, aunque llegó 20 minutos tarde.', now() - interval '1755 hours'),
+  ('3b9ff863-f384-4fd1-823b-1a2c097be8ab', '89df9695-6006-4ccd-883a-83660f5144dd', 'Joaquín B.', 'https://randomuser.me/api/portraits/men/19.jpg', 4, 'Buen trabajo con el destape, precio razonable.', now() - interval '731 hours'),
+  ('96e3d50f-9286-4a2e-8478-3e0a5b1fa362', '89df9695-6006-4ccd-883a-83660f5144dd', 'Tomás R.', null, 5, 'Arregló la fuga del calefont rápido y me explicó todo.', now() - interval '733 hours'),
+  ('847f20be-ff31-4230-bd62-08953b472de1', '89df9695-6006-4ccd-883a-83660f5144dd', 'Martina G.', 'https://randomuser.me/api/portraits/women/81.jpg', 5, 'Quedé feliz con el resultado. Gracias!', now() - interval '1690 hours'),
+  ('36becde0-5e22-49f0-9f6a-f90232303c71', '3306e833-91f6-43a3-95e2-cd2c087c46d6', 'Emilia T.', 'https://randomuser.me/api/portraits/women/10.jpg', 5, 'Atento a cada detalle. De los mejores que he contratado.', now() - interval '897 hours'),
+  ('0e9d8a15-427f-495c-aad7-af288f009999', '3306e833-91f6-43a3-95e2-cd2c087c46d6', 'Amanda Q.', 'https://randomuser.me/api/portraits/women/77.jpg', 5, 'Precio justo y muy buena disposición. Volveré a contratar.', now() - interval '315 hours'),
+  ('5b8b683d-4fbd-4fa9-8201-e54b423acb67', '3306e833-91f6-43a3-95e2-cd2c087c46d6', 'Isidora P.', 'https://randomuser.me/api/portraits/women/41.jpg', 4, 'Muy bien en general, buena comunicación por el chat.', now() - interval '1549 hours'),
+  ('6270c5c7-891d-4921-b9f9-a8199e7dab64', '3306e833-91f6-43a3-95e2-cd2c087c46d6', 'Martina G.', 'https://randomuser.me/api/portraits/women/67.jpg', 5, 'Quedé feliz con el resultado. Gracias!', now() - interval '1079 hours'),
+  ('68c32e62-9912-41f9-a866-ec07d10a1382', '3306e833-91f6-43a3-95e2-cd2c087c46d6', 'Trinidad H.', null, 4, 'Buen trabajo, se demoró un poco más de lo previsto pero quedó bien.', now() - interval '760 hours'),
+  ('bd568340-7a7e-458a-92c8-75bd05fc19fa', '3306e833-91f6-43a3-95e2-cd2c087c46d6', 'Josefa M.', 'https://randomuser.me/api/portraits/women/49.jpg', 5, 'Instaló todas las lámparas y dejó el tablero ordenado.', now() - interval '68 hours'),
+  ('d5f1fc87-3ec9-4b60-a183-39a7308230a5', '3306e833-91f6-43a3-95e2-cd2c087c46d6', 'Paula K.', 'https://randomuser.me/api/portraits/men/82.jpg', 5, 'Lo contraté un sábado y llegó en menos de una hora. Impecable.', now() - interval '573 hours'),
+  ('b8a73fd2-505b-4a61-bc62-c42a17edbded', '3324e783-baf5-43f1-bab8-4de6d46700f4', 'Fernanda J.', null, 5, 'Atento a cada detalle. De los mejores que he contratado.', now() - interval '785 hours'),
+  ('404fb3fc-acb6-481a-85c4-93505f0b0b87', '3324e783-baf5-43f1-bab8-4de6d46700f4', 'Carolina W.', 'https://randomuser.me/api/portraits/women/78.jpg', 5, 'Lo contraté un sábado y llegó en menos de una hora. Impecable.', now() - interval '515 hours'),
+  ('e6865f8c-7dae-45fc-9dff-6cd7d78a0340', '3324e783-baf5-43f1-bab8-4de6d46700f4', 'Felipe A.', null, 5, 'Quedé feliz con el resultado. Gracias!', now() - interval '1038 hours'),
+  ('d3b40244-6e5e-4b15-a59c-b64578871189', '3324e783-baf5-43f1-bab8-4de6d46700f4', 'Amanda Q.', 'https://randomuser.me/api/portraits/women/21.jpg', 5, 'Excelente trabajo, llegó a la hora y dejó todo limpio.', now() - interval '1002 hours'),
+  ('d78677d3-c37c-41d8-99e1-c457ca830e7e', '72b1d28e-1dab-4ce2-917d-655bcde14e1a', 'Florencia L.', 'https://randomuser.me/api/portraits/men/90.jpg', 5, 'Instaló todas las lámparas y dejó el tablero ordenado.', now() - interval '430 hours'),
+  ('afb07a80-f389-4592-a356-ce5aaac5dae8', '72b1d28e-1dab-4ce2-917d-655bcde14e1a', 'Josefa M.', null, 5, 'Precio justo y muy buena disposición. Volveré a contratar.', now() - interval '760 hours'),
+  ('5b049b5c-c39e-49ec-969b-8814462aaa7e', '72b1d28e-1dab-4ce2-917d-655bcde14e1a', 'Maximiliano D.', 'https://randomuser.me/api/portraits/women/1.jpg', 5, 'Muy profesional. Reservar por la app fue facilísimo.', now() - interval '388 hours'),
+  ('31f9bda1-e9d0-41c3-bb57-74efe58a8f95', '72b1d28e-1dab-4ce2-917d-655bcde14e1a', 'Vicente O.', 'https://randomuser.me/api/portraits/women/48.jpg', 5, 'Quedé feliz con el resultado. Gracias!', now() - interval '1288 hours'),
+  ('2113735e-f58a-4686-a075-6c969d920373', '72b1d28e-1dab-4ce2-917d-655bcde14e1a', 'Sebastián Y.', 'https://randomuser.me/api/portraits/men/60.jpg', 5, 'Excelente trabajo, llegó a la hora y dejó todo limpio.', now() - interval '501 hours'),
+  ('f977566e-6f34-4c9d-89c0-24b3967670a8', '9ee75154-bc6c-4804-8b83-35eb90542227', 'Maximiliano D.', 'https://randomuser.me/api/portraits/women/24.jpg', 4, 'Buen trabajo, se demoró un poco más de lo previsto pero quedó bien.', now() - interval '1261 hours'),
+  ('7cc5b643-b167-4149-9277-c3be947dd559', '9ee75154-bc6c-4804-8b83-35eb90542227', 'Martina G.', 'https://randomuser.me/api/portraits/men/50.jpg', 4, 'Muy bien en general, buena comunicación por el chat.', now() - interval '555 hours'),
+  ('58edfb7d-37f8-4b6c-a2f2-aeb86fe8efde', '9ee75154-bc6c-4804-8b83-35eb90542227', 'Amanda Q.', 'https://randomuser.me/api/portraits/men/36.jpg', 5, 'Súper puntual y muy amable. Lo recomiendo 100%.', now() - interval '550 hours'),
+  ('f75e5cdc-0c27-46ac-a177-0e4cb7b9aa29', '9ee75154-bc6c-4804-8b83-35eb90542227', 'Carolina W.', null, 5, 'Muy profesional. Reservar por la app fue facilísimo.', now() - interval '482 hours'),
+  ('6c2a3b61-ca92-4ee3-99c8-3bb0c9d2a50c', '9ee75154-bc6c-4804-8b83-35eb90542227', 'Renata U.', 'https://randomuser.me/api/portraits/men/51.jpg', 5, 'Quedé feliz con el resultado. Gracias!', now() - interval '1937 hours'),
+  ('a596ba11-4b7c-44bf-8019-69c0db957d2a', '433c2e40-5e69-4a36-96ca-b2ad28555751', 'Isidora P.', null, 4, 'Muy bien en general, buena comunicación por el chat.', now() - interval '58 hours'),
+  ('ab2a7d93-21a6-427d-ade5-c0ff5efd672c', '433c2e40-5e69-4a36-96ca-b2ad28555751', 'Amanda Q.', null, 3, 'Cumplió, aunque llegó 20 minutos tarde.', now() - interval '1471 hours'),
+  ('7695798a-5382-4756-879e-a9cc68fbb308', '433c2e40-5e69-4a36-96ca-b2ad28555751', 'Vicente O.', null, 5, 'Quedé feliz con el resultado. Gracias!', now() - interval '239 hours'),
+  ('e4ad3724-18d1-4c77-9d25-d37bc553dbf9', '433c2e40-5e69-4a36-96ca-b2ad28555751', 'Maximiliano D.', 'https://randomuser.me/api/portraits/men/67.jpg', 5, 'Armó el closet completo en una hora y media.', now() - interval '1157 hours'),
+  ('009f2bd7-6fb2-4702-b855-ee08c6a08d90', '433c2e40-5e69-4a36-96ca-b2ad28555751', 'Agustín V.', null, 5, 'Excelente trabajo, llegó a la hora y dejó todo limpio.', now() - interval '185 hours'),
+  ('83aa117f-6242-47d9-8cad-81369236c568', '40f848b1-1350-4629-8a6d-cb12028a92a5', 'Fernanda J.', null, 4, 'Buen trabajo, se demoró un poco más de lo previsto pero quedó bien.', now() - interval '79 hours'),
+  ('7201b1d1-94f6-43d4-84d5-c34190d1e889', '40f848b1-1350-4629-8a6d-cb12028a92a5', 'Joaquín B.', 'https://randomuser.me/api/portraits/women/15.jpg', 4, 'Muy bien en general, buena comunicación por el chat.', now() - interval '290 hours'),
+  ('e4f2c40e-a8c3-424e-ab34-0e64b86a2762', '40f848b1-1350-4629-8a6d-cb12028a92a5', 'Lucas N.', null, 5, 'Precio justo y muy buena disposición. Volveré a contratar.', now() - interval '407 hours'),
+  ('0a46763a-463b-4e26-8dbd-4364cd3325bd', '40f848b1-1350-4629-8a6d-cb12028a92a5', 'Florencia L.', 'https://randomuser.me/api/portraits/women/10.jpg', 5, 'Muy profesional. Reservar por la app fue facilísimo.', now() - interval '1179 hours'),
+  ('be5d5941-cc9f-4230-ac5c-918ee230cce1', '40f848b1-1350-4629-8a6d-cb12028a92a5', 'Felipe A.', 'https://randomuser.me/api/portraits/men/76.jpg', 3, 'Cumplió, aunque llegó 20 minutos tarde.', now() - interval '1418 hours'),
+  ('b2bc0ab1-58b5-441e-a8d1-bfb64f1a995d', '40f848b1-1350-4629-8a6d-cb12028a92a5', 'Martina G.', 'https://randomuser.me/api/portraits/women/35.jpg', 5, 'Atento a cada detalle. De los mejores que he contratado.', now() - interval '604 hours'),
+  ('c92bf760-e2e1-4e50-8a39-88adb186d950', '2212694b-5386-4035-a407-56bd97c88898', 'Gaspar I.', null, 5, 'Quedé feliz con el resultado. Gracias!', now() - interval '613 hours'),
+  ('2106330a-ad2a-4822-b69e-141b2cb12e52', '2212694b-5386-4035-a407-56bd97c88898', 'Isidora P.', 'https://randomuser.me/api/portraits/women/18.jpg', 5, 'Mi perro la adora. Me manda fotos de cada paseo.', now() - interval '1536 hours'),
+  ('2e553906-b118-4820-83b4-8c7486439cae', '2212694b-5386-4035-a407-56bd97c88898', 'Florencia L.', null, 4, 'Buen trabajo, se demoró un poco más de lo previsto pero quedó bien.', now() - interval '1729 hours'),
+  ('37fef516-3254-4bfa-bf24-e2c7bf037576', '2212694b-5386-4035-a407-56bd97c88898', 'Lucas N.', 'https://randomuser.me/api/portraits/men/29.jpg', 5, 'Muy profesional. Reservar por la app fue facilísimo.', now() - interval '1810 hours'),
+  ('83fa5a42-9689-49b6-9ef3-307706b086cf', '2212694b-5386-4035-a407-56bd97c88898', 'Vicente O.', 'https://randomuser.me/api/portraits/men/30.jpg', 5, 'Precio justo y muy buena disposición. Volveré a contratar.', now() - interval '1744 hours'),
+  ('12b397cc-3eba-477a-9123-7ec8d760ecf5', '2212694b-5386-4035-a407-56bd97c88898', 'Tomás R.', 'https://randomuser.me/api/portraits/men/21.jpg', 3, 'Cumplió, aunque llegó 20 minutos tarde.', now() - interval '1005 hours'),
+  ('945ac484-7794-479d-a362-613e82a83450', '56a6fe01-d0e1-4082-acbe-cff62e37a1ee', 'Carolina W.', null, 5, 'Lo contraté un sábado y llegó en menos de una hora. Impecable.', now() - interval '498 hours'),
+  ('e03a0444-e62c-4444-990c-620e53ed14a2', '56a6fe01-d0e1-4082-acbe-cff62e37a1ee', 'Martina G.', null, 5, 'Precio justo y muy buena disposición. Volveré a contratar.', now() - interval '384 hours'),
+  ('66a4d5bb-671f-4ac6-8fe4-ae5e6e0e2b5b', '56a6fe01-d0e1-4082-acbe-cff62e37a1ee', 'Gaspar I.', 'https://randomuser.me/api/portraits/women/34.jpg', 3, 'Cumplió, aunque llegó 20 minutos tarde.', now() - interval '1475 hours'),
+  ('41049fd7-a1a6-4822-89bd-29fc6d79c89a', '56a6fe01-d0e1-4082-acbe-cff62e37a1ee', 'Renata U.', 'https://randomuser.me/api/portraits/women/62.jpg', 5, 'Atento a cada detalle. De los mejores que he contratado.', now() - interval '209 hours'),
+  ('a23599d5-abe9-47d7-a37c-8b2fa6809038', '56a6fe01-d0e1-4082-acbe-cff62e37a1ee', 'Antonia F.', 'https://randomuser.me/api/portraits/women/46.jpg', 4, 'Buen trabajo, se demoró un poco más de lo previsto pero quedó bien.', now() - interval '231 hours'),
+  ('26ac0af2-959e-479e-8ce0-7c1d40682a61', '56a6fe01-d0e1-4082-acbe-cff62e37a1ee', 'Cristóbal E.', 'https://randomuser.me/api/portraits/women/33.jpg', 5, 'Súper puntual y muy amable. Lo recomiendo 100%.', now() - interval '1966 hours'),
+  ('ea9ba160-2102-4d57-b03c-951b6410547a', '56a6fe01-d0e1-4082-acbe-cff62e37a1ee', 'Ignacio X.', null, 5, 'Muy profesional. Reservar por la app fue facilísimo.', now() - interval '368 hours'),
+  ('12fbc7a7-ad28-4c38-bf83-66886167a5bb', '04a74629-0705-47e5-9a10-aca554f5f1eb', 'Catalina S.', 'https://randomuser.me/api/portraits/women/22.jpg', 5, 'Lo contraté un sábado y llegó en menos de una hora. Impecable.', now() - interval '1325 hours'),
+  ('139b3d8b-6b56-49ba-a4bd-4cb2051aee68', '04a74629-0705-47e5-9a10-aca554f5f1eb', 'Agustín V.', 'https://randomuser.me/api/portraits/men/22.jpg', 5, 'Mi perro la adora. Me manda fotos de cada paseo.', now() - interval '1965 hours'),
+  ('6273a7cf-7824-47e0-884e-73c2f7e5e97b', '04a74629-0705-47e5-9a10-aca554f5f1eb', 'Sebastián Y.', null, 5, 'Muy responsable cuidando a mi gata mientras viajé.', now() - interval '231 hours'),
+  ('358ef3c1-60c2-40d8-b1aa-a249790048df', '04a74629-0705-47e5-9a10-aca554f5f1eb', 'Cristóbal E.', 'https://randomuser.me/api/portraits/women/76.jpg', 5, 'Súper puntual y muy amable. Lo recomiendo 100%.', now() - interval '1197 hours'),
+  ('deda1c7c-350f-4234-8773-096e42bcfa74', '04a74629-0705-47e5-9a10-aca554f5f1eb', 'Isidora P.', 'https://randomuser.me/api/portraits/women/31.jpg', 4, 'Buen trabajo, se demoró un poco más de lo previsto pero quedó bien.', now() - interval '1408 hours'),
+  ('6b20dde2-e556-4ecb-adf6-afe0603963eb', '04a74629-0705-47e5-9a10-aca554f5f1eb', 'Josefa M.', 'https://randomuser.me/api/portraits/women/58.jpg', 5, 'Quedé feliz con el resultado. Gracias!', now() - interval '820 hours'),
+  ('9fcf127d-f9fc-42f2-9fc1-6e3a931ddd3a', '04a74629-0705-47e5-9a10-aca554f5f1eb', 'Renata U.', 'https://randomuser.me/api/portraits/women/72.jpg', 5, 'Excelente trabajo, llegó a la hora y dejó todo limpio.', now() - interval '1453 hours'),
+  ('e4370b70-b3de-4c79-b200-9f7623c660e2', '022988b6-9151-4b81-b793-4b6fcf8cf948', 'Cristóbal E.', null, 5, 'Quedé feliz con el resultado. Gracias!', now() - interval '1618 hours'),
+  ('e442ee6f-91f7-4c4a-a786-3918cf6a8be5', '022988b6-9151-4b81-b793-4b6fcf8cf948', 'Benjamín C.', 'https://randomuser.me/api/portraits/women/43.jpg', 5, 'El pulido dejó la pintura como nueva.', now() - interval '617 hours'),
+  ('fd819e99-e269-4c47-8ed9-df1abcaf0541', '022988b6-9151-4b81-b793-4b6fcf8cf948', 'Ignacio X.', 'https://randomuser.me/api/portraits/men/35.jpg', 5, 'Muy profesional. Reservar por la app fue facilísimo.', now() - interval '109 hours'),
+  ('0485f2a6-7836-4453-b087-372c1d288d84', '022988b6-9151-4b81-b793-4b6fcf8cf948', 'Lucas N.', 'https://randomuser.me/api/portraits/women/2.jpg', 5, 'Excelente trabajo, llegó a la hora y dejó todo limpio.', now() - interval '341 hours'),
+  ('c4895bb2-2bdc-43fc-8386-ab28d65698ed', '022988b6-9151-4b81-b793-4b6fcf8cf948', 'Trinidad H.', 'https://randomuser.me/api/portraits/men/36.jpg', 5, 'Atento a cada detalle. De los mejores que he contratado.', now() - interval '756 hours'),
+  ('8d74df8e-e5b0-4ad9-bee0-c28ce114a5b3', '022988b6-9151-4b81-b793-4b6fcf8cf948', 'Tomás R.', null, 5, 'Me lavaron el auto en la oficina, quedó impecable.', now() - interval '1328 hours'),
+  ('fc53bb76-0a21-4aa7-a118-1852d45fca2e', '022988b6-9151-4b81-b793-4b6fcf8cf948', 'Gaspar I.', 'https://randomuser.me/api/portraits/women/48.jpg', 5, 'Precio justo y muy buena disposición. Volveré a contratar.', now() - interval '129 hours'),
+  ('a8b40f9d-f89c-477a-8bbb-40280f5c17ba', '5ecf1516-e771-422b-a212-460b401d2ace', 'Isidora P.', 'https://randomuser.me/api/portraits/women/91.jpg', 5, 'Precio justo y muy buena disposición. Volveré a contratar.', now() - interval '1966 hours'),
+  ('9e17413a-e863-4526-ba4e-112087c639b7', '5ecf1516-e771-422b-a212-460b401d2ace', 'Tomás R.', 'https://randomuser.me/api/portraits/men/7.jpg', 5, 'Muy profesional. Reservar por la app fue facilísimo.', now() - interval '1862 hours'),
+  ('2f717e19-1b58-43ac-a497-3afdf546c1da', '5ecf1516-e771-422b-a212-460b401d2ace', 'Renata U.', 'https://randomuser.me/api/portraits/women/55.jpg', 5, 'Me lavaron el auto en la oficina, quedó impecable.', now() - interval '1813 hours'),
+  ('44f4734d-a579-48ca-80e6-c326f326bda9', '5ecf1516-e771-422b-a212-460b401d2ace', 'Josefa M.', 'https://randomuser.me/api/portraits/women/56.jpg', 4, 'Buen trabajo, se demoró un poco más de lo previsto pero quedó bien.', now() - interval '1447 hours'),
+  ('4c3f0525-d7c1-4edf-b870-34ab62b98a46', '5ecf1516-e771-422b-a212-460b401d2ace', 'Ignacio X.', null, 5, 'Excelente trabajo, llegó a la hora y dejó todo limpio.', now() - interval '259 hours'),
+  ('e1571a11-edd3-4d77-af77-888454204954', 'fdca69b1-6cf6-4837-9d55-8dc3b2d31058', 'Fernanda J.', null, 5, 'Excelente trabajo, llegó a la hora y dejó todo limpio.', now() - interval '1794 hours'),
+  ('0a6c553b-4efc-4853-97fd-d0314aa145c8', 'fdca69b1-6cf6-4837-9d55-8dc3b2d31058', 'Amanda Q.', 'https://randomuser.me/api/portraits/men/66.jpg', 5, 'Quedé feliz con el resultado. Gracias!', now() - interval '388 hours'),
+  ('9415bc21-0b72-4669-ba8b-b25c107440f3', 'fdca69b1-6cf6-4837-9d55-8dc3b2d31058', 'Cristóbal E.', 'https://randomuser.me/api/portraits/women/13.jpg', 4, 'Muy bien en general, buena comunicación por el chat.', now() - interval '989 hours'),
+  ('43508b1c-52e6-4300-900e-f2b69559f427', 'fdca69b1-6cf6-4837-9d55-8dc3b2d31058', 'Agustín V.', 'https://randomuser.me/api/portraits/men/90.jpg', 3, 'Cumplió, aunque llegó 20 minutos tarde.', now() - interval '518 hours'),
+  ('ff24047a-e344-4481-b2b5-6b922e4d98bd', 'fdca69b1-6cf6-4837-9d55-8dc3b2d31058', 'Rodrigo Z.', null, 5, 'Precio justo y muy buena disposición. Volveré a contratar.', now() - interval '1069 hours'),
+  ('db765d02-121b-4a46-8e89-c06d8521425b', 'fdca69b1-6cf6-4837-9d55-8dc3b2d31058', 'Catalina S.', 'https://randomuser.me/api/portraits/women/38.jpg', 5, 'Me lavaron el auto en la oficina, quedó impecable.', now() - interval '525 hours'),
+  ('49b547f5-1983-4956-b1d2-e65f6de583d9', '405c4cd2-0edd-4f15-8e5c-b5257cd00bfe', 'Ignacio X.', null, 5, 'Lo contraté un sábado y llegó en menos de una hora. Impecable.', now() - interval '674 hours'),
+  ('9cf6e509-b029-4384-a798-40dec5baf0a5', '405c4cd2-0edd-4f15-8e5c-b5257cd00bfe', 'Carolina W.', 'https://randomuser.me/api/portraits/women/87.jpg', 5, 'Quedé feliz con el resultado. Gracias!', now() - interval '40 hours'),
+  ('97d3ea8d-ff32-4bb8-b2f0-7f1c66518eb2', '405c4cd2-0edd-4f15-8e5c-b5257cd00bfe', 'Isidora P.', 'https://randomuser.me/api/portraits/men/49.jpg', 5, 'Cambió la chapa rápido y a buen precio.', now() - interval '239 hours'),
+  ('e9eec12d-3ea2-43ab-8c31-e31decfc3c8f', '405c4cd2-0edd-4f15-8e5c-b5257cd00bfe', 'Lucas N.', 'https://randomuser.me/api/portraits/women/11.jpg', 5, 'Me abrió la puerta en 15 minutos un domingo en la noche.', now() - interval '1093 hours'),
+  ('43deeeee-a252-4dd4-a045-ecb7974d93f2', 'e98639c7-d4ca-48a6-a6ee-63cfb4d6cdee', 'Josefa M.', 'https://randomuser.me/api/portraits/women/8.jpg', 5, 'Atento a cada detalle. De los mejores que he contratado.', now() - interval '1544 hours'),
+  ('5c755f47-b2a8-4da5-a204-429b4ec0973d', 'e98639c7-d4ca-48a6-a6ee-63cfb4d6cdee', 'Rodrigo Z.', null, 4, 'Muy bien en general, buena comunicación por el chat.', now() - interval '1930 hours'),
+  ('0ce6603a-f305-46d3-b501-9bca90718d5f', 'e98639c7-d4ca-48a6-a6ee-63cfb4d6cdee', 'Cristóbal E.', null, 5, 'Súper puntual y muy amable. Lo recomiendo 100%.', now() - interval '1876 hours'),
+  ('4435e6bf-40c3-4c57-9f21-58936beede30', 'e98639c7-d4ca-48a6-a6ee-63cfb4d6cdee', 'Felipe A.', null, 5, 'Lo contraté un sábado y llegó en menos de una hora. Impecable.', now() - interval '1820 hours'),
+  ('6ddb9903-239c-48cf-b7b2-7727f320e367', 'e98639c7-d4ca-48a6-a6ee-63cfb4d6cdee', 'Vicente O.', null, 5, 'Cambió la chapa rápido y a buen precio.', now() - interval '670 hours'),
+  ('0eab4de7-2fef-4dd2-8623-249b5d441014', 'e98639c7-d4ca-48a6-a6ee-63cfb4d6cdee', 'Tomás R.', null, 3, 'Cumplió, aunque llegó 20 minutos tarde.', now() - interval '1156 hours'),
+  ('0c0d57b8-d0b3-41c2-b83a-359529f220ba', 'e98639c7-d4ca-48a6-a6ee-63cfb4d6cdee', 'Sebastián Y.', 'https://randomuser.me/api/portraits/men/79.jpg', 5, 'Excelente trabajo, llegó a la hora y dejó todo limpio.', now() - interval '345 hours'),
+  ('093bf88b-5f8f-40fe-8132-20d1a2c4df98', '04668b65-f1f1-4c55-8331-2629af38bf28', 'Felipe A.', 'https://randomuser.me/api/portraits/men/35.jpg', 5, 'Me abrió la puerta en 15 minutos un domingo en la noche.', now() - interval '709 hours'),
+  ('9dfad388-64d7-4d4d-8824-ab66e1e32230', '04668b65-f1f1-4c55-8331-2629af38bf28', 'Gaspar I.', null, 5, 'Quedé feliz con el resultado. Gracias!', now() - interval '1028 hours'),
+  ('c02d8e9f-1149-44ee-a496-845300107634', '04668b65-f1f1-4c55-8331-2629af38bf28', 'Antonia F.', 'https://randomuser.me/api/portraits/women/59.jpg', 4, 'Muy bien en general, buena comunicación por el chat.', now() - interval '1359 hours'),
+  ('aa74b53d-f719-4a27-8ae8-3a9d14dd32c2', '04668b65-f1f1-4c55-8331-2629af38bf28', 'Vicente O.', null, 3, 'Cumplió, aunque llegó 20 minutos tarde.', now() - interval '1313 hours'),
+  ('793d14b3-cdbc-4c7e-b380-ab5562893318', '04668b65-f1f1-4c55-8331-2629af38bf28', 'Paula K.', 'https://randomuser.me/api/portraits/women/66.jpg', 4, 'Buen trabajo, se demoró un poco más de lo previsto pero quedó bien.', now() - interval '1804 hours'),
+  ('a950b312-bb88-45a8-89fb-34a91d04670a', '71bfbbbc-8ffa-40d6-9c39-7105ffe3e1e5', 'Tomás R.', 'https://randomuser.me/api/portraits/women/87.jpg', 5, 'Ahora tengo wifi en toda la casa.', now() - interval '1302 hours'),
+  ('fb1b1abc-803a-4306-9505-d335abef67ba', '71bfbbbc-8ffa-40d6-9c39-7105ffe3e1e5', 'Amanda Q.', null, 5, 'Quedé feliz con el resultado. Gracias!', now() - interval '754 hours'),
+  ('f71e020a-5edb-4ac4-815b-43c0c24144d3', '71bfbbbc-8ffa-40d6-9c39-7105ffe3e1e5', 'Felipe A.', null, 4, 'Muy bien en general, buena comunicación por el chat.', now() - interval '1524 hours'),
+  ('d6d083ab-cba1-442f-bf23-f25815f97894', '71bfbbbc-8ffa-40d6-9c39-7105ffe3e1e5', 'Antonia F.', 'https://randomuser.me/api/portraits/women/36.jpg', 3, 'Cumplió, aunque llegó 20 minutos tarde.', now() - interval '90 hours'),
+  ('25f58132-2081-4d0a-b1a1-03189fd4a850', '50ce16fb-2799-4d43-ae2d-a5967f81f013', 'Catalina S.', null, 5, 'Excelente trabajo, llegó a la hora y dejó todo limpio.', now() - interval '90 hours'),
+  ('90d15473-7fe8-45fa-a663-191e13a43399', '50ce16fb-2799-4d43-ae2d-a5967f81f013', 'Cristóbal E.', 'https://randomuser.me/api/portraits/women/40.jpg', 5, 'Atento a cada detalle. De los mejores que he contratado.', now() - interval '944 hours'),
+  ('51ed20b0-c562-4bfc-8f50-a6ec7376b709', '50ce16fb-2799-4d43-ae2d-a5967f81f013', 'Ignacio X.', 'https://randomuser.me/api/portraits/men/59.jpg', 3, 'Cumplió, aunque llegó 20 minutos tarde.', now() - interval '1627 hours'),
+  ('3622539f-7726-4897-b7ee-aa699964d2c3', '50ce16fb-2799-4d43-ae2d-a5967f81f013', 'Felipe A.', 'https://randomuser.me/api/portraits/men/72.jpg', 5, 'Mi notebook volvió a la vida. Respaldó todo antes.', now() - interval '952 hours'),
+  ('3c8009bb-c16b-4a3c-92ec-c1166f63a343', '50ce16fb-2799-4d43-ae2d-a5967f81f013', 'Agustín V.', 'https://randomuser.me/api/portraits/men/14.jpg', 4, 'Muy bien en general, buena comunicación por el chat.', now() - interval '885 hours'),
+  ('0d0e6a53-1f0f-4a57-b7e7-64f9a3e3a0ee', 'e34112bf-6af0-4c47-8603-c942f221b1d4', 'Antonia F.', 'https://randomuser.me/api/portraits/men/3.jpg', 5, 'Ahora tengo wifi en toda la casa.', now() - interval '1589 hours'),
+  ('559f98c0-323b-4b7e-bfb7-455666b74282', 'e34112bf-6af0-4c47-8603-c942f221b1d4', 'Ignacio X.', 'https://randomuser.me/api/portraits/women/83.jpg', 5, 'Atento a cada detalle. De los mejores que he contratado.', now() - interval '340 hours'),
+  ('890d4623-6c8c-4719-bfec-4222f3b69680', 'e34112bf-6af0-4c47-8603-c942f221b1d4', 'Trinidad H.', 'https://randomuser.me/api/portraits/women/46.jpg', 5, 'Precio justo y muy buena disposición. Volveré a contratar.', now() - interval '1961 hours'),
+  ('e102fa6e-68c6-49de-bc1a-d4eb604d1eb5', 'e34112bf-6af0-4c47-8603-c942f221b1d4', 'Florencia L.', null, 5, 'Lo contraté un sábado y llegó en menos de una hora. Impecable.', now() - interval '678 hours'),
+  ('1ccc0d7a-5f24-430a-80d2-31117ef82ba0', 'e34112bf-6af0-4c47-8603-c942f221b1d4', 'Gaspar I.', 'https://randomuser.me/api/portraits/women/14.jpg', 3, 'Cumplió, aunque llegó 20 minutos tarde.', now() - interval '563 hours'),
+  ('b7a322be-cc47-4c63-8c59-323caff764c5', '89dbd0a8-7a51-4002-bbb7-ad99a708f5cf', 'Agustín V.', null, 5, 'Muy profesional. Reservar por la app fue facilísimo.', now() - interval '813 hours'),
+  ('09cfb7d3-3c24-4a12-ad2a-2a57b16558a0', '89dbd0a8-7a51-4002-bbb7-ad99a708f5cf', 'Trinidad H.', null, 5, 'Mi hijo subió de un 4 a un 6 en matemáticas.', now() - interval '1583 hours'),
+  ('0e55a748-b9de-49a1-8beb-f4029b585eb8', '89dbd0a8-7a51-4002-bbb7-ad99a708f5cf', 'Cristóbal E.', 'https://randomuser.me/api/portraits/women/18.jpg', 5, 'Clases muy entretenidas, ya toco mis canciones.', now() - interval '1977 hours'),
+  ('114723d0-7d58-48d1-8fba-2402ce35fa34', '89dbd0a8-7a51-4002-bbb7-ad99a708f5cf', 'Rodrigo Z.', null, 5, 'Precio justo y muy buena disposición. Volveré a contratar.', now() - interval '1047 hours'),
+  ('e633a443-bf31-4cd4-8d2e-0bd92305bb79', '89dbd0a8-7a51-4002-bbb7-ad99a708f5cf', 'Emilia T.', 'https://randomuser.me/api/portraits/women/74.jpg', 5, 'Quedé feliz con el resultado. Gracias!', now() - interval '1758 hours'),
+  ('e78f82f2-7ece-4087-908f-141f42b390fd', '0324286d-e54f-45e7-899c-a903fe574d0d', 'Sebastián Y.', 'https://randomuser.me/api/portraits/women/52.jpg', 4, 'Muy bien en general, buena comunicación por el chat.', now() - interval '209 hours'),
+  ('8aa4c2eb-bccc-43dc-abf4-45defcc61e77', '0324286d-e54f-45e7-899c-a903fe574d0d', 'Gaspar I.', null, 4, 'Buen trabajo, se demoró un poco más de lo previsto pero quedó bien.', now() - interval '1259 hours'),
+  ('6a6f1f5c-15ab-442d-a244-ed3872f3600f', '0324286d-e54f-45e7-899c-a903fe574d0d', 'Martina G.', 'https://randomuser.me/api/portraits/women/70.jpg', 3, 'Cumplió, aunque llegó 20 minutos tarde.', now() - interval '784 hours'),
+  ('b071c868-1148-4ddc-8b5b-7d6a2724d5a5', '0324286d-e54f-45e7-899c-a903fe574d0d', 'Felipe A.', 'https://randomuser.me/api/portraits/women/15.jpg', 5, 'Muy profesional. Reservar por la app fue facilísimo.', now() - interval '70 hours'),
+  ('ffe0c36e-f453-4c5d-8977-e7e4db7e0216', 'a9253c5b-225d-460c-99a5-00f50503d68e', 'Tomás R.', 'https://randomuser.me/api/portraits/men/85.jpg', 5, 'Quedé feliz con el resultado. Gracias!', now() - interval '1472 hours'),
+  ('3d8fdc72-1dcf-4c71-b871-db2f6b03d71b', 'a9253c5b-225d-460c-99a5-00f50503d68e', 'Carolina W.', 'https://randomuser.me/api/portraits/men/80.jpg', 5, 'Lo contraté un sábado y llegó en menos de una hora. Impecable.', now() - interval '1067 hours'),
+  ('bca9e564-fb8d-4f0a-9be9-99fa775096fa', 'a9253c5b-225d-460c-99a5-00f50503d68e', 'Maximiliano D.', null, 5, 'Muy profesional. Reservar por la app fue facilísimo.', now() - interval '495 hours'),
+  ('3743d2b4-3c5d-4c40-ba70-d75348bff0fe', 'a9253c5b-225d-460c-99a5-00f50503d68e', 'Joaquín B.', null, 4, 'Muy bien en general, buena comunicación por el chat.', now() - interval '868 hours'),
+  ('f260d5d7-85fe-49af-952d-2d395c9cd9ee', 'a9253c5b-225d-460c-99a5-00f50503d68e', 'Felipe A.', 'https://randomuser.me/api/portraits/women/48.jpg', 5, 'Excelente trabajo, llegó a la hora y dejó todo limpio.', now() - interval '742 hours'),
+  ('a2b0b698-51f6-46a4-83d0-cb5a1369ca56', 'a9253c5b-225d-460c-99a5-00f50503d68e', 'Isidora P.', 'https://randomuser.me/api/portraits/women/48.jpg', 3, 'Cumplió, aunque llegó 20 minutos tarde.', now() - interval '356 hours'),
+  ('ce84484f-7eb6-46f9-a83c-bc221b8b39fc', 'a9253c5b-225d-460c-99a5-00f50503d68e', 'Lucas N.', 'https://randomuser.me/api/portraits/women/61.jpg', 5, 'Mi hijo subió de un 4 a un 6 en matemáticas.', now() - interval '1620 hours'),
+  ('37d7709b-3381-420d-b5e9-24f6ef85315c', '45a9c520-9302-4711-8105-a1c34a03d3d5', 'Vicente O.', 'https://randomuser.me/api/portraits/women/59.jpg', 4, 'Muy bien en general, buena comunicación por el chat.', now() - interval '1857 hours'),
+  ('4e351f27-5adb-401b-a204-a74c8a1bc62e', '45a9c520-9302-4711-8105-a1c34a03d3d5', 'Tomás R.', 'https://randomuser.me/api/portraits/men/59.jpg', 5, 'Lo contraté un sábado y llegó en menos de una hora. Impecable.', now() - interval '1688 hours'),
+  ('1428d969-a779-4ff6-a718-54ce7daeada0', '45a9c520-9302-4711-8105-a1c34a03d3d5', 'Paula K.', 'https://randomuser.me/api/portraits/men/92.jpg', 5, 'Súper puntual y muy amable. Lo recomiendo 100%.', now() - interval '1207 hours'),
+  ('de96702e-6ba5-487e-bf55-c03e5690a60b', '45a9c520-9302-4711-8105-a1c34a03d3d5', 'Lucas N.', 'https://randomuser.me/api/portraits/men/85.jpg', 5, 'Muy profesional con mi mamá en su rehabilitación.', now() - interval '1002 hours'),
+  ('ecfa8e4e-e44f-433b-af15-df0dd6797a8b', '45a9c520-9302-4711-8105-a1c34a03d3d5', 'Benjamín C.', null, 5, 'Precio justo y muy buena disposición. Volveré a contratar.', now() - interval '1210 hours'),
+  ('89aed221-9ffc-4d62-881f-23746cc6ce8e', '004d8d8b-bde9-4d79-b8b0-043cebeb3b19', 'Gaspar I.', null, 5, 'Atento a cada detalle. De los mejores que he contratado.', now() - interval '1268 hours'),
+  ('f5c4c8fd-ac79-40e2-a8fc-af68857e371c', '004d8d8b-bde9-4d79-b8b0-043cebeb3b19', 'Sebastián Y.', 'https://randomuser.me/api/portraits/men/55.jpg', 5, 'Quedé feliz con el resultado. Gracias!', now() - interval '360 hours'),
+  ('c8422e14-7369-4c4c-8b99-489371bf0d52', '004d8d8b-bde9-4d79-b8b0-043cebeb3b19', 'Agustín V.', null, 5, 'El mejor masaje descontracturante que me han dado.', now() - interval '230 hours'),
+  ('39ce7df6-f5b7-4077-9e0a-152222260290', '004d8d8b-bde9-4d79-b8b0-043cebeb3b19', 'Lucas N.', 'https://randomuser.me/api/portraits/women/34.jpg', 4, 'Buen trabajo, se demoró un poco más de lo previsto pero quedó bien.', now() - interval '416 hours'),
+  ('50bc90f3-3dc4-4436-b96c-636d959f3183', '004d8d8b-bde9-4d79-b8b0-043cebeb3b19', 'Antonia F.', null, 5, 'Súper puntual y muy amable. Lo recomiendo 100%.', now() - interval '1283 hours'),
+  ('4639f35d-50b1-4869-9f55-de218484c441', 'e8db3107-9731-426a-95c8-b7b209fda5df', 'Agustín V.', null, 5, 'Lo contraté un sábado y llegó en menos de una hora. Impecable.', now() - interval '893 hours'),
+  ('5befb486-6780-4ec3-926c-abf961b2e451', 'e8db3107-9731-426a-95c8-b7b209fda5df', 'Joaquín B.', null, 3, 'Cumplió, aunque llegó 20 minutos tarde.', now() - interval '969 hours'),
+  ('e872fdf9-a245-4536-a7d9-c8be486b99e7', 'e8db3107-9731-426a-95c8-b7b209fda5df', 'Catalina S.', null, 5, 'Quedé feliz con el resultado. Gracias!', now() - interval '638 hours'),
+  ('d681902c-a6fc-4500-8df5-c320e6c9727f', 'e8db3107-9731-426a-95c8-b7b209fda5df', 'Rodrigo Z.', 'https://randomuser.me/api/portraits/men/69.jpg', 5, 'Excelente trabajo, llegó a la hora y dejó todo limpio.', now() - interval '1127 hours'),
+  ('53c799d3-3104-40a2-a809-fcc9e164624a', 'e8db3107-9731-426a-95c8-b7b209fda5df', 'Carolina W.', 'https://randomuser.me/api/portraits/women/62.jpg', 5, 'Muy profesional. Reservar por la app fue facilísimo.', now() - interval '1724 hours'),
+  ('e6f07e30-cbf1-49dc-b4f3-55b5371df8c2', 'e8db3107-9731-426a-95c8-b7b209fda5df', 'Martina G.', 'https://randomuser.me/api/portraits/men/71.jpg', 4, 'Buen trabajo, se demoró un poco más de lo previsto pero quedó bien.', now() - interval '86 hours'),
+  ('50be639e-45f4-4f70-806e-a8378a7e3fe5', 'e93239c1-2cbc-4c1c-8806-9ce82065a391', 'Joaquín B.', null, 5, 'Atento a cada detalle. De los mejores que he contratado.', now() - interval '169 hours'),
+  ('0a217911-f287-4f9e-8079-1561febc1a2b', 'e93239c1-2cbc-4c1c-8806-9ce82065a391', 'Felipe A.', 'https://randomuser.me/api/portraits/women/83.jpg', 5, 'Muy profesional. Reservar por la app fue facilísimo.', now() - interval '609 hours'),
+  ('f753b52c-7116-4ae9-8aa9-9d70bc4fa308', 'e93239c1-2cbc-4c1c-8806-9ce82065a391', 'Antonia F.', 'https://randomuser.me/api/portraits/men/47.jpg', 5, 'Quedé feliz con el resultado. Gracias!', now() - interval '601 hours'),
+  ('4a7a71aa-82ca-465d-b07e-eff90a3e450f', 'e93239c1-2cbc-4c1c-8806-9ce82065a391', 'Cristóbal E.', null, 4, 'Muy bien en general, buena comunicación por el chat.', now() - interval '1803 hours'),
+  ('8edb1b98-4ec5-4a9c-a68b-c73961be6c72', '384f9f55-6774-47b8-bda5-60b2e5de04d3', 'Ignacio X.', 'https://randomuser.me/api/portraits/women/53.jpg', 5, 'Precio justo y muy buena disposición. Volveré a contratar.', now() - interval '1592 hours'),
+  ('50f39d23-c326-4414-be9a-252c76627fdc', '384f9f55-6774-47b8-bda5-60b2e5de04d3', 'Fernanda J.', null, 4, 'Muy bien en general, buena comunicación por el chat.', now() - interval '1832 hours'),
+  ('2c0b90bc-b903-4d53-bf7a-e0ff24d83bcd', '384f9f55-6774-47b8-bda5-60b2e5de04d3', 'Emilia T.', null, 5, 'Excelente trabajo, llegó a la hora y dejó todo limpio.', now() - interval '1401 hours'),
+  ('a96fd4e8-2551-4948-ab73-236524a20163', '384f9f55-6774-47b8-bda5-60b2e5de04d3', 'Cristóbal E.', null, 5, 'Quedé feliz con el resultado. Gracias!', now() - interval '1024 hours'),
+  ('11536f13-478d-431d-8f54-fccc91b02d26', '384f9f55-6774-47b8-bda5-60b2e5de04d3', 'Josefa M.', null, 5, 'Lo contraté un sábado y llegó en menos de una hora. Impecable.', now() - interval '1421 hours'),
+  ('d66913d1-bb12-42b9-ad3f-5378e1235a78', '384f9f55-6774-47b8-bda5-60b2e5de04d3', 'Isidora P.', null, 5, 'En dos meses bajé 5 kilos entrenando en mi casa.', now() - interval '1009 hours'),
+  ('ba03f7bf-0bc2-4c3e-9ad1-4cc3daa260c3', '91a90c87-f01b-4b22-b9bd-810c3d9d4a8e', 'Benjamín C.', null, 4, 'Muy bien en general, buena comunicación por el chat.', now() - interval '365 hours'),
+  ('177dff9f-3640-418a-9a4f-025a0cbfa3ad', '91a90c87-f01b-4b22-b9bd-810c3d9d4a8e', 'Martina G.', 'https://randomuser.me/api/portraits/women/74.jpg', 5, 'Muy motivador y buen plan de entrenamiento.', now() - interval '1885 hours'),
+  ('b1210ba6-68ab-49d3-8c4a-31e5b13478d6', '91a90c87-f01b-4b22-b9bd-810c3d9d4a8e', 'Emilia T.', 'https://randomuser.me/api/portraits/men/18.jpg', 5, 'Muy profesional. Reservar por la app fue facilísimo.', now() - interval '1874 hours'),
+  ('e09be999-b03d-46f2-968b-89b19ecf3085', '91a90c87-f01b-4b22-b9bd-810c3d9d4a8e', 'Florencia L.', 'https://randomuser.me/api/portraits/women/15.jpg', 5, 'Excelente trabajo, llegó a la hora y dejó todo limpio.', now() - interval '1485 hours'),
+  ('8abbb87e-5de1-4ecb-85cb-59bf5d1a50be', '91a90c87-f01b-4b22-b9bd-810c3d9d4a8e', 'Paula K.', 'https://randomuser.me/api/portraits/women/18.jpg', 5, 'Súper puntual y muy amable. Lo recomiendo 100%.', now() - interval '991 hours'),
+  ('0973608f-3029-430a-b560-a361de3b3657', '91a90c87-f01b-4b22-b9bd-810c3d9d4a8e', 'Renata U.', null, 5, 'Quedé feliz con el resultado. Gracias!', now() - interval '1576 hours'),
+  ('110b531e-1d25-4ba8-83d8-08c34090f20a', 'cf7a1244-29c8-47e2-897c-47404773c041', 'Martina G.', null, 5, 'La mudanza fue rápida y no se rompió nada.', now() - interval '650 hours'),
+  ('371c1a1b-ee72-4a94-87cb-d1588df4454d', 'cf7a1244-29c8-47e2-897c-47404773c041', 'Rodrigo Z.', null, 5, 'Precio justo y muy buena disposición. Volveré a contratar.', now() - interval '1372 hours'),
+  ('cc0b9251-b9a1-42fe-81d6-6c46a851bb09', 'cf7a1244-29c8-47e2-897c-47404773c041', 'Isidora P.', null, 5, 'Quedé feliz con el resultado. Gracias!', now() - interval '878 hours'),
+  ('c093b53c-485a-4527-a4d5-c351b0bf7cfd', 'cf7a1244-29c8-47e2-897c-47404773c041', 'Fernanda J.', 'https://randomuser.me/api/portraits/men/23.jpg', 4, 'Buen trabajo, se demoró un poco más de lo previsto pero quedó bien.', now() - interval '1881 hours'),
+  ('283a30f7-ddc6-4654-a51a-ba10bfe6cea7', 'cf7a1244-29c8-47e2-897c-47404773c041', 'Vicente O.', null, 5, 'Excelente trabajo, llegó a la hora y dejó todo limpio.', now() - interval '635 hours'),
+  ('414de88a-f26a-4d25-aa6b-02755c1cec3b', '84dbb6b8-354c-4d2b-af7e-6ed591ccccdf', 'Paula K.', 'https://randomuser.me/api/portraits/men/8.jpg', 4, 'Buen trabajo, se demoró un poco más de lo previsto pero quedó bien.', now() - interval '979 hours'),
+  ('55def803-a1ea-434e-bd5c-4755595d4341', '84dbb6b8-354c-4d2b-af7e-6ed591ccccdf', 'Carolina W.', 'https://randomuser.me/api/portraits/men/78.jpg', 5, 'Me trasladó el refri el mismo día que lo compré.', now() - interval '338 hours'),
+  ('3e7d7e64-4ace-4f5e-b87e-1ce8aa7dd25d', '84dbb6b8-354c-4d2b-af7e-6ed591ccccdf', 'Maximiliano D.', 'https://randomuser.me/api/portraits/women/1.jpg', 4, 'Muy bien en general, buena comunicación por el chat.', now() - interval '66 hours'),
+  ('d35ddfbd-6211-47b5-8f1c-f76fe72992e4', '84dbb6b8-354c-4d2b-af7e-6ed591ccccdf', 'Isidora P.', null, 5, 'Atento a cada detalle. De los mejores que he contratado.', now() - interval '1784 hours'),
+  ('15aa321c-f744-418e-849d-6fcb0cbd12a5', '84dbb6b8-354c-4d2b-af7e-6ed591ccccdf', 'Vicente O.', null, 5, 'Precio justo y muy buena disposición. Volveré a contratar.', now() - interval '320 hours'),
+  ('882ae68c-9373-44c7-b553-1ae47e9ef5c0', '84dbb6b8-354c-4d2b-af7e-6ed591ccccdf', 'Emilia T.', 'https://randomuser.me/api/portraits/women/29.jpg', 3, 'Cumplió, aunque llegó 20 minutos tarde.', now() - interval '1247 hours'),
+  ('d74cfef6-e050-4d13-8892-977c12367616', '038dc3e5-a685-4217-a4ac-f8381db74622', 'Carolina W.', 'https://randomuser.me/api/portraits/women/61.jpg', 5, 'Me trasladó el refri el mismo día que lo compré.', now() - interval '10 hours'),
+  ('ad7d11b2-ee1e-46d7-8405-d7ead85b0230', '038dc3e5-a685-4217-a4ac-f8381db74622', 'Trinidad H.', 'https://randomuser.me/api/portraits/men/51.jpg', 5, 'Lo contraté un sábado y llegó en menos de una hora. Impecable.', now() - interval '1017 hours'),
+  ('1d3621a0-9b3b-428e-a0fe-2479d856f10d', '038dc3e5-a685-4217-a4ac-f8381db74622', 'Emilia T.', null, 4, 'Muy bien en general, buena comunicación por el chat.', now() - interval '1850 hours'),
+  ('4421db7d-003f-4c62-ab68-1c21e7a1d1c2', '038dc3e5-a685-4217-a4ac-f8381db74622', 'Felipe A.', 'https://randomuser.me/api/portraits/men/1.jpg', 5, 'Quedé feliz con el resultado. Gracias!', now() - interval '177 hours')
+on conflict (id) do nothing;
+
+-- Reservas históricas de ejemplo (no pertenecen a ningún usuario; alimentan el panel de negocio)
+insert into public.bookings (id, client_id, client_name, provider_id, service_id, service_title, scheduled_at, address, notes,
+  price, commission_rate, commission_amount, provider_amount, status, payment_status, card_brand, card_last4, is_demo,
+  created_at, updated_at, accepted_at, completed_at, cancelled_at) values
+  ('52998b19-82da-4ce4-aac5-b5aadc294b83', null, 'Joaquín Araya', '5d71952f-95de-4168-83ea-43094b25a1cb', 'b16408d2-d72f-460a-9ec2-d7ded5ebb570', 'Poda de arbustos', date_trunc('hour', now()) - interval '29 days 3 hours', 'La Reina, Santiago', '', 22500, 0.10, 2250, 20250, 'completed', 'released', 'Mastercard', '1792', true, date_trunc('hour', now()) - interval '29 days 3 hours' - interval '55 hours', date_trunc('hour', now()) - interval '29 days 3 hours' - interval '55 hours', date_trunc('hour', now()) - interval '29 days 3 hours' - interval '4 hours', date_trunc('hour', now()) - interval '29 days 3 hours' + interval '2 hours', null),
+  ('f8b83f5b-5d2e-4d53-9cd2-05746518796b', null, 'Felipe Contreras', '004d8d8b-bde9-4d79-b8b0-043cebeb3b19', '84dfdb1b-3858-4ac8-981e-5e70d6941df6', 'Sesión de kinesiología', date_trunc('hour', now()) - interval '12 days 6 hours', 'Providencia, Santiago', '', 30500, 0.10, 3050, 27450, 'completed', 'released', 'American Express', '9337', true, date_trunc('hour', now()) - interval '12 days 6 hours' - interval '59 hours', date_trunc('hour', now()) - interval '12 days 6 hours' - interval '59 hours', date_trunc('hour', now()) - interval '12 days 6 hours' - interval '5 hours', date_trunc('hour', now()) - interval '12 days 6 hours' + interval '2 hours', null),
+  ('ebeaebf0-9c6c-4cc9-8e51-12838a3b76b4', null, 'Vicente Torres', '3306e833-91f6-43a3-95e2-cd2c087c46d6', '7825fb05-6c82-4c8a-be5a-3829b4b160bd', 'Revisión de tablero', date_trunc('hour', now()) + interval '2 days 11 hours', 'Ñuñoa, Santiago', '', 27000, 0.10, 2700, 24300, 'accepted', 'held', 'Visa', '1986', true, date_trunc('hour', now()) + interval '2 days 11 hours' - interval '72 hours', date_trunc('hour', now()) + interval '2 days 11 hours' - interval '72 hours', date_trunc('hour', now()) + interval '2 days 11 hours' - interval '5 hours', null, null),
+  ('12f2362c-1ce8-4bf7-b235-c6926169909f', null, 'Nicolás Soto', '038dc3e5-a685-4217-a4ac-f8381db74622', 'a9ec2e9e-0208-4e54-b35f-08f051317e39', 'Mudanza de departamento', date_trunc('hour', now()) + interval '4 days 9 hours', 'Recoleta, Santiago', '', 138000, 0.10, 13800, 124200, 'accepted', 'held', 'Visa', '8753', true, date_trunc('hour', now()) + interval '4 days 9 hours' - interval '47 hours', date_trunc('hour', now()) + interval '4 days 9 hours' - interval '47 hours', date_trunc('hour', now()) + interval '4 days 9 hours' - interval '2 hours', null, null),
+  ('de035717-435e-44f0-8272-e0851aaa5bd1', null, 'Tomás Martínez', '50ce16fb-2799-4d43-ae2d-a5967f81f013', 'c832265d-3e31-4399-a3c6-3901f8de60a6', 'Configuración de wifi', date_trunc('hour', now()) - interval '5 days 6 hours', 'Santiago Centro, Santiago', '', 17000, 0.10, 1700, 15300, 'cancelled', 'refunded', 'Mastercard', '8768', true, date_trunc('hour', now()) - interval '5 days 6 hours' - interval '46 hours', date_trunc('hour', now()) - interval '5 days 6 hours' - interval '46 hours', null, null, date_trunc('hour', now()) - interval '5 days 6 hours' - interval '1 hours'),
+  ('c53db50b-00c8-49fa-af85-c47952ca9a48', null, 'Catalina Sepúlveda', '50ce16fb-2799-4d43-ae2d-a5967f81f013', '3b115c70-aad6-498c-b639-e82d5d68d47b', 'Formateo + respaldo', date_trunc('hour', now()) - interval '6 days 8 hours', 'Santiago Centro, Santiago', '', 22000, 0.10, 2200, 19800, 'rejected', 'refunded', 'Visa', '5118', true, date_trunc('hour', now()) - interval '6 days 8 hours' - interval '20 hours', date_trunc('hour', now()) - interval '6 days 8 hours' - interval '20 hours', null, null, date_trunc('hour', now()) - interval '6 days 8 hours' - interval '1 hours'),
+  ('d4debbdf-7898-409d-89a4-42b501716742', null, 'Benjamín Reyes', '91a90c87-f01b-4b22-b9bd-810c3d9d4a8e', 'f1991abb-0297-4358-a26e-b24f8d9e5331', 'Sesión personalizada (1 h)', date_trunc('hour', now()) - interval '6 days 5 hours', 'San Miguel, Santiago', '', 20500, 0.10, 2050, 18450, 'completed', 'released', 'Visa', '4959', true, date_trunc('hour', now()) - interval '6 days 5 hours' - interval '16 hours', date_trunc('hour', now()) - interval '6 days 5 hours' - interval '16 hours', date_trunc('hour', now()) - interval '6 days 5 hours' - interval '4 hours', date_trunc('hour', now()) - interval '6 days 5 hours' + interval '3 hours', null),
+  ('7d2f10b4-4c0c-4b13-843b-27bf770257e7', null, 'Joaquín Araya', '50ce16fb-2799-4d43-ae2d-a5967f81f013', '0cea9d92-6e05-4c18-95f4-3a85f8ab8837', 'Mantención de notebook', date_trunc('hour', now()) - interval '14 days 14 hours', 'Santiago Centro, Santiago', '', 17500, 0.10, 1750, 15750, 'completed', 'released', 'Visa', '8607', true, date_trunc('hour', now()) - interval '14 days 14 hours' - interval '27 hours', date_trunc('hour', now()) - interval '14 days 14 hours' - interval '27 hours', date_trunc('hour', now()) - interval '14 days 14 hours' - interval '4 hours', date_trunc('hour', now()) - interval '14 days 14 hours' + interval '1 hours', null),
+  ('b3d5b24f-6f91-4f9b-b0a6-920b45aee42e', null, 'Fernanda Silva', '97dd5002-e9b3-49ed-982c-1f32046cbff7', '7fe38627-b06c-4c69-947c-c3ff08da052b', 'Poda de arbustos', date_trunc('hour', now()) - interval '5 days 9 hours', 'Las Condes, Santiago', '', 23000, 0.10, 2300, 20700, 'completed', 'released', 'Visa', '7837', true, date_trunc('hour', now()) - interval '5 days 9 hours' - interval '39 hours', date_trunc('hour', now()) - interval '5 days 9 hours' - interval '39 hours', date_trunc('hour', now()) - interval '5 days 9 hours' - interval '2 hours', date_trunc('hour', now()) - interval '5 days 9 hours' + interval '1 hours', null),
+  ('b574f3bb-9849-4492-9495-0a8f58de6886', null, 'Constanza Pérez', '510722d6-14c0-4a53-be41-04f809905d8f', 'b360d7e2-bf16-46d2-88a0-acc625ff1f3b', 'Manicure semipermanente', date_trunc('hour', now()) - interval '8 days 7 hours', 'Las Condes, Santiago', '', 14500, 0.10, 1450, 13050, 'completed', 'released', 'Mastercard', '5329', true, date_trunc('hour', now()) - interval '8 days 7 hours' - interval '42 hours', date_trunc('hour', now()) - interval '8 days 7 hours' - interval '42 hours', date_trunc('hour', now()) - interval '8 days 7 hours' - interval '4 hours', date_trunc('hour', now()) - interval '8 days 7 hours' + interval '2 hours', null),
+  ('69b9b12a-f81c-45e4-a2a7-d5e9a3308c3a', null, 'Antonia Castillo', 'e34112bf-6af0-4c47-8603-c942f221b1d4', '00b7a438-c239-4ced-9d8b-88e0f1eba77e', 'Configuración de wifi', date_trunc('hour', now()) - interval '13 days 12 hours', 'Las Condes, Santiago', '', 15000, 0.10, 1500, 13500, 'completed', 'released', 'Visa', '4985', true, date_trunc('hour', now()) - interval '13 days 12 hours' - interval '68 hours', date_trunc('hour', now()) - interval '13 days 12 hours' - interval '68 hours', date_trunc('hour', now()) - interval '13 days 12 hours' - interval '4 hours', date_trunc('hour', now()) - interval '13 days 12 hours' + interval '3 hours', null),
+  ('2e4628f0-598b-49d8-b09a-98ff9ee2ced5', null, 'Sebastián Díaz', 'fdca69b1-6cf6-4837-9d55-8dc3b2d31058', '57276029-9dff-456d-89a0-e079ea71a8a4', 'Lavado de tapiz', date_trunc('hour', now()) - interval '20 days 14 hours', 'San Joaquín, Santiago', '', 37500, 0.10, 3750, 33750, 'completed', 'released', 'American Express', '9537', true, date_trunc('hour', now()) - interval '20 days 14 hours' - interval '37 hours', date_trunc('hour', now()) - interval '20 days 14 hours' - interval '37 hours', date_trunc('hour', now()) - interval '20 days 14 hours' - interval '5 hours', date_trunc('hour', now()) - interval '20 days 14 hours' + interval '2 hours', null),
+  ('f4046d2f-223f-4cb1-a245-3eb931b307b0', null, 'Valentina Rojas', '04a03d6c-390d-412f-9b8b-e1b0fc84184c', '15ea15b1-ec48-48e7-ad3a-f12e91092806', 'Limpieza de sofá 3 cuerpos', date_trunc('hour', now()) - interval '10 days 8 hours', 'Las Condes, Santiago', '', 32000, 0.10, 3200, 28800, 'completed', 'released', 'Mastercard', '1610', true, date_trunc('hour', now()) - interval '10 days 8 hours' - interval '51 hours', date_trunc('hour', now()) - interval '10 days 8 hours' - interval '51 hours', date_trunc('hour', now()) - interval '10 days 8 hours' - interval '4 hours', date_trunc('hour', now()) - interval '10 days 8 hours' + interval '3 hours', null),
+  ('6ad8d4c6-fad1-4d67-a5f4-8efb342d007f', null, 'Nicolás Soto', '038dc3e5-a685-4217-a4ac-f8381db74622', 'e44d52fe-48cd-4e7f-82bf-23552398d4e5', 'Traslado de electrodomésticos', date_trunc('hour', now()) - interval '2 days 6 hours', 'Recoleta, Santiago', '', 19500, 0.10, 1950, 17550, 'completed', 'released', 'Visa', '2366', true, date_trunc('hour', now()) - interval '2 days 6 hours' - interval '61 hours', date_trunc('hour', now()) - interval '2 days 6 hours' - interval '61 hours', date_trunc('hour', now()) - interval '2 days 6 hours' - interval '5 hours', date_trunc('hour', now()) - interval '2 days 6 hours' + interval '3 hours', null),
+  ('90111f02-7db9-4ca2-b944-e19624a6ebc8', null, 'Daniela López', 'eaf1c674-7440-4b31-a730-3bac63afcd67', 'ef9174f5-3218-4edc-acbb-7cc67f6f07c6', 'Perfilado de barba', date_trunc('hour', now()) - interval '13 days 4 hours', 'Vitacura, Santiago', '', 7000, 0.10, 700, 6300, 'completed', 'released', 'Mastercard', '7378', true, date_trunc('hour', now()) - interval '13 days 4 hours' - interval '53 hours', date_trunc('hour', now()) - interval '13 days 4 hours' - interval '53 hours', date_trunc('hour', now()) - interval '13 days 4 hours' - interval '5 hours', date_trunc('hour', now()) - interval '13 days 4 hours' + interval '2 hours', null),
+  ('5a0b9b92-0015-4538-aebd-1810ffdcdf40', null, 'Benjamín Reyes', '30b96d13-d742-4d87-a8c2-8b57d556fd4d', '664154de-c1cf-41e8-8cdc-4d638185f9e2', 'Lifting de pestañas', date_trunc('hour', now()) - interval '13 days 7 hours', 'Providencia, Santiago', '', 22500, 0.10, 2250, 20250, 'completed', 'released', 'Visa', '3152', true, date_trunc('hour', now()) - interval '13 days 7 hours' - interval '67 hours', date_trunc('hour', now()) - interval '13 days 7 hours' - interval '67 hours', date_trunc('hour', now()) - interval '13 days 7 hours' - interval '5 hours', date_trunc('hour', now()) - interval '13 days 7 hours' + interval '3 hours', null),
+  ('1f111d44-edf7-4e42-8328-8b3e899d16f7', null, 'Antonia Castillo', '022988b6-9151-4b81-b793-4b6fcf8cf948', 'fe44f295-8e64-447c-a676-a9e43254d0a8', 'Lavado exterior + interior', date_trunc('hour', now()) - interval '0 days 14 hours', 'Vitacura, Santiago', '', 14000, 0.10, 1400, 12600, 'completed', 'released', 'Visa', '9005', true, date_trunc('hour', now()) - interval '0 days 14 hours' - interval '44 hours', date_trunc('hour', now()) - interval '0 days 14 hours' - interval '44 hours', date_trunc('hour', now()) - interval '0 days 14 hours' - interval '3 hours', date_trunc('hour', now()) - interval '0 days 14 hours' + interval '3 hours', null),
+  ('b9d7a1cc-8550-4618-8753-2e781db6b4d6', null, 'Benjamín Reyes', '4c27a439-86ff-4d62-9263-2e766ca3c848', '08f16c76-3014-4c37-9d1a-bdccb46ca5b9', 'Cambio de aceite y filtro a domicilio', date_trunc('hour', now()) - interval '2 days 13 hours', 'Providencia, Santiago', '', 51000, 0.10, 5100, 45900, 'completed', 'released', 'Mastercard', '1903', true, date_trunc('hour', now()) - interval '2 days 13 hours' - interval '34 hours', date_trunc('hour', now()) - interval '2 days 13 hours' - interval '34 hours', date_trunc('hour', now()) - interval '2 days 13 hours' - interval '3 hours', date_trunc('hour', now()) - interval '2 days 13 hours' + interval '3 hours', null),
+  ('f7a1832c-eae0-4b46-9dea-e2e112f6d7d1', null, 'Daniela López', '30b96d13-d742-4d87-a8c2-8b57d556fd4d', '664154de-c1cf-41e8-8cdc-4d638185f9e2', 'Lifting de pestañas', date_trunc('hour', now()) - interval '16 days 11 hours', 'Providencia, Santiago', '', 22500, 0.10, 2250, 20250, 'completed', 'released', 'Mastercard', '5156', true, date_trunc('hour', now()) - interval '16 days 11 hours' - interval '13 hours', date_trunc('hour', now()) - interval '16 days 11 hours' - interval '13 hours', date_trunc('hour', now()) - interval '16 days 11 hours' - interval '4 hours', date_trunc('hour', now()) - interval '16 days 11 hours' + interval '1 hours', null),
+  ('1666f2fd-548c-42a7-9f2e-171bd0d44bcb', null, 'Antonia Castillo', '04a74629-0705-47e5-9a10-aca554f5f1eb', '34f95ee0-d956-4f14-ac53-73029a26a949', 'Visita de cuidado', date_trunc('hour', now()) - interval '13 days 6 hours', 'Las Condes, Santiago', '', 10000, 0.10, 1000, 9000, 'completed', 'released', 'Visa', '5845', true, date_trunc('hour', now()) - interval '13 days 6 hours' - interval '50 hours', date_trunc('hour', now()) - interval '13 days 6 hours' - interval '50 hours', date_trunc('hour', now()) - interval '13 days 6 hours' - interval '3 hours', date_trunc('hour', now()) - interval '13 days 6 hours' + interval '1 hours', null),
+  ('ca6fab2d-2549-4805-b627-1c2a5b04c7d5', null, 'Camila Fuentes', 'e98639c7-d4ca-48a6-a6ee-63cfb4d6cdee', '8890312e-cee0-473c-924c-d2fae54654b4', 'Copia de llaves a domicilio', date_trunc('hour', now()) + interval '2 days 9 hours', 'Ñuñoa, Santiago', '', 7500, 0.10, 750, 6750, 'accepted', 'held', 'Mastercard', '8828', true, date_trunc('hour', now()) + interval '2 days 9 hours' - interval '51 hours', date_trunc('hour', now()) + interval '2 days 9 hours' - interval '51 hours', date_trunc('hour', now()) + interval '2 days 9 hours' - interval '3 hours', null, null),
+  ('33d38876-0ad3-4550-9bb1-7e17e37a0d13', null, 'Isidora Flores', '04668b65-f1f1-4c55-8331-2629af38bf28', '174aa5b8-dacd-4f4f-806b-80c86effb87b', 'Apertura de puerta', date_trunc('hour', now()) - interval '7 days 9 hours', 'Quinta Normal, Santiago', '', 22000, 0.10, 2200, 19800, 'completed', 'released', 'Mastercard', '6459', true, date_trunc('hour', now()) - interval '7 days 9 hours' - interval '25 hours', date_trunc('hour', now()) - interval '7 days 9 hours' - interval '25 hours', date_trunc('hour', now()) - interval '7 days 9 hours' - interval '2 hours', date_trunc('hour', now()) - interval '7 days 9 hours' + interval '2 hours', null),
+  ('ee2935a6-d62a-431c-9deb-e02ddf2e9ef0', null, 'Martín Vargas', '45a9c520-9302-4711-8105-a1c34a03d3d5', 'd6bb7df7-e097-4014-8edd-e1d5c7fca8d3', 'Sesión de kinesiología', date_trunc('hour', now()) - interval '2 days 6 hours', 'Vitacura, Santiago', '', 30500, 0.10, 3050, 27450, 'completed', 'released', 'Mastercard', '8256', true, date_trunc('hour', now()) - interval '2 days 6 hours' - interval '52 hours', date_trunc('hour', now()) - interval '2 days 6 hours' - interval '52 hours', date_trunc('hour', now()) - interval '2 days 6 hours' - interval '5 hours', date_trunc('hour', now()) - interval '2 days 6 hours' + interval '1 hours', null),
+  ('c09a12f7-7966-485d-90e7-6f4cafb24efc', null, 'Camila Fuentes', '50ce16fb-2799-4d43-ae2d-a5967f81f013', '3b115c70-aad6-498c-b639-e82d5d68d47b', 'Formateo + respaldo', date_trunc('hour', now()) - interval '0 days 4 hours', 'Santiago Centro, Santiago', '', 22000, 0.10, 2200, 19800, 'completed', 'released', 'American Express', '8772', true, date_trunc('hour', now()) - interval '0 days 4 hours' - interval '11 hours', date_trunc('hour', now()) - interval '0 days 4 hours' - interval '11 hours', date_trunc('hour', now()) - interval '0 days 4 hours' - interval '2 hours', date_trunc('hour', now()) - interval '0 days 4 hours' + interval '2 hours', null),
+  ('0aa5836e-9a8e-4297-8ea6-6ffe94da9242', null, 'Matías González', '04a03d6c-390d-412f-9b8b-e1b0fc84184c', 'cb9949f0-7e1e-47c6-a4ac-55f448ba5214', 'Limpieza de alfombra', date_trunc('hour', now()) - interval '0 days 14 hours', 'Las Condes, Santiago', '', 22500, 0.10, 2250, 20250, 'completed', 'released', 'Visa', '4019', true, date_trunc('hour', now()) - interval '0 days 14 hours' - interval '64 hours', date_trunc('hour', now()) - interval '0 days 14 hours' - interval '64 hours', date_trunc('hour', now()) - interval '0 days 14 hours' - interval '5 hours', date_trunc('hour', now()) - interval '0 days 14 hours' + interval '2 hours', null),
+  ('ea85a8fc-ad7a-4054-94cf-3a61a0723022', null, 'Felipe Contreras', '40f848b1-1350-4629-8a6d-cb12028a92a5', '62bcf4a7-4e66-41fd-bf78-fa2f1f0eff36', 'Pintura de habitación', date_trunc('hour', now()) - interval '7 days 7 hours', 'Independencia, Santiago', '', 62500, 0.10, 6250, 56250, 'completed', 'released', 'American Express', '2371', true, date_trunc('hour', now()) - interval '7 days 7 hours' - interval '29 hours', date_trunc('hour', now()) - interval '7 days 7 hours' - interval '29 hours', date_trunc('hour', now()) - interval '7 days 7 hours' - interval '3 hours', date_trunc('hour', now()) - interval '7 days 7 hours' + interval '2 hours', null),
+  ('455b4085-443c-4541-a9d2-fdf1952491a1', null, 'Camila Fuentes', '405c4cd2-0edd-4f15-8e5c-b5257cd00bfe', '92b1a7ef-ff09-41f2-af91-fc405be0c877', 'Apertura de puerta', date_trunc('hour', now()) - interval '5 days 12 hours', 'Santiago Centro, Santiago', '', 28000, 0.10, 2800, 25200, 'completed', 'released', 'Visa', '2568', true, date_trunc('hour', now()) - interval '5 days 12 hours' - interval '36 hours', date_trunc('hour', now()) - interval '5 days 12 hours' - interval '36 hours', date_trunc('hour', now()) - interval '5 days 12 hours' - interval '2 hours', date_trunc('hour', now()) - interval '5 days 12 hours' + interval '2 hours', null),
+  ('d6721624-5057-4a48-a731-65bfa560dff6', null, 'Tomás Martínez', 'd7665b14-0cca-458a-bd35-94e7aa5dc48f', 'a967a284-0373-4e38-96ac-69678ff4d73c', 'Corte a domicilio', date_trunc('hour', now()) - interval '4 days 14 hours', 'Santiago Centro, Santiago', '', 12500, 0.10, 1250, 11250, 'completed', 'released', 'Visa', '7766', true, date_trunc('hour', now()) - interval '4 days 14 hours' - interval '7 hours', date_trunc('hour', now()) - interval '4 days 14 hours' - interval '7 hours', date_trunc('hour', now()) - interval '4 days 14 hours' - interval '2 hours', date_trunc('hour', now()) - interval '4 days 14 hours' + interval '3 hours', null),
+  ('9c8f6f2c-f745-4d1e-8ede-e4bf64529e7e', null, 'Benjamín Reyes', '04a03d6c-390d-412f-9b8b-e1b0fc84184c', '15ea15b1-ec48-48e7-ad3a-f12e91092806', 'Limpieza de sofá 3 cuerpos', date_trunc('hour', now()) - interval '1 days 3 hours', 'Las Condes, Santiago', '', 32000, 0.10, 3200, 28800, 'completed', 'released', 'Visa', '7110', true, date_trunc('hour', now()) - interval '1 days 3 hours' - interval '7 hours', date_trunc('hour', now()) - interval '1 days 3 hours' - interval '7 hours', date_trunc('hour', now()) - interval '1 days 3 hours' - interval '5 hours', date_trunc('hour', now()) - interval '1 days 3 hours' + interval '3 hours', null),
+  ('47e00b70-9f5e-41da-88c6-1897bc77bf50', null, 'Diego Morales', '3324e783-baf5-43f1-bab8-4de6d46700f4', 'e8b06ab3-11bf-4971-880f-1f8700ea9520', 'Revisión de tablero', date_trunc('hour', now()) - interval '6 days 5 hours', 'Maipú, Santiago', '', 25500, 0.10, 2550, 22950, 'completed', 'released', 'Visa', '3283', true, date_trunc('hour', now()) - interval '6 days 5 hours' - interval '18 hours', date_trunc('hour', now()) - interval '6 days 5 hours' - interval '18 hours', date_trunc('hour', now()) - interval '6 days 5 hours' - interval '4 hours', date_trunc('hour', now()) - interval '6 days 5 hours' + interval '3 hours', null),
+  ('626f84cc-8e31-409b-9b74-6b9d8709cfdd', null, 'Camila Fuentes', '0324286d-e54f-45e7-899c-a903fe574d0d', '22776b28-5890-4266-a20f-0ad24b9c46f8', 'Inglés conversacional (1 h)', date_trunc('hour', now()) - interval '1 days 12 hours', 'Providencia, Santiago', '', 12000, 0.10, 1200, 10800, 'completed', 'released', 'Mastercard', '5923', true, date_trunc('hour', now()) - interval '1 days 12 hours' - interval '25 hours', date_trunc('hour', now()) - interval '1 days 12 hours' - interval '25 hours', date_trunc('hour', now()) - interval '1 days 12 hours' - interval '3 hours', date_trunc('hour', now()) - interval '1 days 12 hours' + interval '3 hours', null),
+  ('42c0a5cc-2abc-42be-bd33-f156e11efd4a', null, 'Matías González', '3306e833-91f6-43a3-95e2-cd2c087c46d6', '0476b102-6079-4e8f-b6dc-92611e8a8a10', 'Instalación de lámpara', date_trunc('hour', now()) - interval '10 days 7 hours', 'Ñuñoa, Santiago', '', 10500, 0.10, 1050, 9450, 'completed', 'released', 'American Express', '1055', true, date_trunc('hour', now()) - interval '10 days 7 hours' - interval '9 hours', date_trunc('hour', now()) - interval '10 days 7 hours' - interval '9 hours', date_trunc('hour', now()) - interval '10 days 7 hours' - interval '2 hours', date_trunc('hour', now()) - interval '10 days 7 hours' + interval '1 hours', null),
+  ('7fd71b9a-f4fb-418a-8e2b-acc31122133e', null, 'Vicente Torres', 'a126a1a2-e8e0-40e6-8709-31a593bd54c4', 'e2dec1cf-fa56-4dab-b694-ca44b1508790', 'Pedicure spa', date_trunc('hour', now()) - interval '9 days 4 hours', 'Ñuñoa, Santiago', '', 18000, 0.10, 1800, 16200, 'completed', 'released', 'Visa', '7687', true, date_trunc('hour', now()) - interval '9 days 4 hours' - interval '43 hours', date_trunc('hour', now()) - interval '9 days 4 hours' - interval '43 hours', date_trunc('hour', now()) - interval '9 days 4 hours' - interval '5 hours', date_trunc('hour', now()) - interval '9 days 4 hours' + interval '2 hours', null),
+  ('43faf9e3-611c-400f-ae68-c39dd0acf99d', null, 'Javiera Muñoz', 'a9253c5b-225d-460c-99a5-00f50503d68e', '44f4b27b-6b9a-458e-8f78-50e4fe1cc984', 'Clase de guitarra (1 h)', date_trunc('hour', now()) + interval '5 days 0 hours', 'La Reina, Santiago', '', 13000, 0.10, 1300, 11700, 'accepted', 'held', 'Visa', '9864', true, date_trunc('hour', now()) + interval '5 days 0 hours' - interval '62 hours', date_trunc('hour', now()) + interval '5 days 0 hours' - interval '62 hours', date_trunc('hour', now()) + interval '5 days 0 hours' - interval '5 hours', null, null),
+  ('b350b7ea-774d-4869-9a17-c09bc8244663', null, 'Felipe Contreras', '433c2e40-5e69-4a36-96ca-b2ad28555751', '2b9c7d70-fa43-4c9b-8a85-c9e2fca681ba', 'Pintura de habitación', date_trunc('hour', now()) - interval '4 days 9 hours', 'Peñalolén, Santiago', '', 59500, 0.10, 5950, 53550, 'cancelled', 'refunded', 'Visa', '3797', true, date_trunc('hour', now()) - interval '4 days 9 hours' - interval '26 hours', date_trunc('hour', now()) - interval '4 days 9 hours' - interval '26 hours', null, null, date_trunc('hour', now()) - interval '4 days 9 hours' - interval '1 hours'),
+  ('d7574c24-3d40-4686-a7f6-9d902fb6da8a', null, 'Benjamín Reyes', '84dbb6b8-354c-4d2b-af7e-6ed591ccccdf', '6949ad8c-3568-4c24-b7cc-1d71a928986d', 'Traslado de electrodomésticos', date_trunc('hour', now()) - interval '7 days 5 hours', 'La Florida, Santiago', '', 19000, 0.10, 1900, 17100, 'completed', 'released', 'Mastercard', '8122', true, date_trunc('hour', now()) - interval '7 days 5 hours' - interval '58 hours', date_trunc('hour', now()) - interval '7 days 5 hours' - interval '58 hours', date_trunc('hour', now()) - interval '7 days 5 hours' - interval '5 hours', date_trunc('hour', now()) - interval '7 days 5 hours' + interval '3 hours', null),
+  ('137fe05f-af25-4a63-89ff-e4323828bace', null, 'Daniela López', '89dbd0a8-7a51-4002-bbb7-ad99a708f5cf', '408bc6df-2c2e-47b9-a421-5b28683e3d0e', 'Preparación PAES (1 h)', date_trunc('hour', now()) - interval '1 days 3 hours', 'Ñuñoa, Santiago', '', 18000, 0.10, 1800, 16200, 'rejected', 'refunded', 'Mastercard', '6486', true, date_trunc('hour', now()) - interval '1 days 3 hours' - interval '32 hours', date_trunc('hour', now()) - interval '1 days 3 hours' - interval '32 hours', null, null, date_trunc('hour', now()) - interval '1 days 3 hours' - interval '1 hours'),
+  ('2de9f475-9a46-4120-852f-d366158d4232', null, 'Matías González', 'a9253c5b-225d-460c-99a5-00f50503d68e', '1765f3c3-05d8-4f52-a682-882ccb7dd05b', 'Inglés conversacional (1 h)', date_trunc('hour', now()) - interval '5 days 12 hours', 'La Reina, Santiago', '', 14500, 0.10, 1450, 13050, 'completed', 'released', 'Mastercard', '5479', true, date_trunc('hour', now()) - interval '5 days 12 hours' - interval '12 hours', date_trunc('hour', now()) - interval '5 days 12 hours' - interval '12 hours', date_trunc('hour', now()) - interval '5 days 12 hours' - interval '2 hours', date_trunc('hour', now()) - interval '5 days 12 hours' + interval '3 hours', null),
+  ('579bc495-c1ea-4b38-939c-e372a75d1249', null, 'Diego Morales', '40f848b1-1350-4629-8a6d-cb12028a92a5', '8753950c-09c9-4490-bd3e-fae43e34649c', 'Reparaciones varias (1 hora)', date_trunc('hour', now()) - interval '3 days 7 hours', 'Independencia, Santiago', '', 17000, 0.10, 1700, 15300, 'completed', 'released', 'Visa', '2786', true, date_trunc('hour', now()) - interval '3 days 7 hours' - interval '9 hours', date_trunc('hour', now()) - interval '3 days 7 hours' - interval '9 hours', date_trunc('hour', now()) - interval '3 days 7 hours' - interval '5 hours', date_trunc('hour', now()) - interval '3 days 7 hours' + interval '2 hours', null),
+  ('8475c40b-f127-428d-8fa4-7d015e7ee1ec', null, 'Daniela López', '40f848b1-1350-4629-8a6d-cb12028a92a5', '8753950c-09c9-4490-bd3e-fae43e34649c', 'Reparaciones varias (1 hora)', date_trunc('hour', now()) - interval '12 days 13 hours', 'Independencia, Santiago', '', 17000, 0.10, 1700, 15300, 'completed', 'released', 'Mastercard', '7376', true, date_trunc('hour', now()) - interval '12 days 13 hours' - interval '39 hours', date_trunc('hour', now()) - interval '12 days 13 hours' - interval '39 hours', date_trunc('hour', now()) - interval '12 days 13 hours' - interval '3 hours', date_trunc('hour', now()) - interval '12 days 13 hours' + interval '3 hours', null),
+  ('9bc01837-1c69-4496-a46a-38d087832e77', null, 'Daniela López', '004d8d8b-bde9-4d79-b8b0-043cebeb3b19', '37d9d311-05a3-435d-acd9-66fbc28c2a2a', 'Masaje relajante (60 min)', date_trunc('hour', now()) - interval '16 days 14 hours', 'Providencia, Santiago', '', 28000, 0.10, 2800, 25200, 'cancelled', 'refunded', 'Visa', '8434', true, date_trunc('hour', now()) - interval '16 days 14 hours' - interval '26 hours', date_trunc('hour', now()) - interval '16 days 14 hours' - interval '26 hours', null, null, date_trunc('hour', now()) - interval '16 days 14 hours' - interval '1 hours'),
+  ('a05d9391-109c-470d-a947-4143d6492078', null, 'Matías González', '7197e33c-da06-4cff-a0ef-ee2dc7245e42', '1403b188-1e6d-4e3f-b42f-3f1c211fec1c', 'Limpieza de maleza', date_trunc('hour', now()) - interval '27 days 12 hours', 'Maipú, Santiago', '', 21500, 0.10, 2150, 19350, 'completed', 'released', 'Mastercard', '8441', true, date_trunc('hour', now()) - interval '27 days 12 hours' - interval '19 hours', date_trunc('hour', now()) - interval '27 days 12 hours' - interval '19 hours', date_trunc('hour', now()) - interval '27 days 12 hours' - interval '4 hours', date_trunc('hour', now()) - interval '27 days 12 hours' + interval '2 hours', null),
+  ('7b01c480-2ec7-4d4e-81b6-245d99edf762', null, 'Camila Fuentes', 'e93239c1-2cbc-4c1c-8806-9ce82065a391', '701c3bbd-630c-451e-9fca-455f287066c6', 'Sesión personalizada (1 h)', date_trunc('hour', now()) - interval '20 days 6 hours', 'Las Condes, Santiago', '', 21500, 0.10, 2150, 19350, 'completed', 'released', 'Visa', '7597', true, date_trunc('hour', now()) - interval '20 days 6 hours' - interval '30 hours', date_trunc('hour', now()) - interval '20 days 6 hours' - interval '30 hours', date_trunc('hour', now()) - interval '20 days 6 hours' - interval '4 hours', date_trunc('hour', now()) - interval '20 days 6 hours' + interval '1 hours', null),
+  ('99270972-9960-4a41-80ed-61cda0d003b9', null, 'Vicente Torres', '40f848b1-1350-4629-8a6d-cb12028a92a5', '62bcf4a7-4e66-41fd-bf78-fa2f1f0eff36', 'Pintura de habitación', date_trunc('hour', now()) - interval '4 days 8 hours', 'Independencia, Santiago', '', 62500, 0.10, 6250, 56250, 'rejected', 'refunded', 'Mastercard', '3582', true, date_trunc('hour', now()) - interval '4 days 8 hours' - interval '43 hours', date_trunc('hour', now()) - interval '4 days 8 hours' - interval '43 hours', null, null, date_trunc('hour', now()) - interval '4 days 8 hours' - interval '1 hours'),
+  ('88500866-d95c-4b40-8104-5e8e48d4b81f', null, 'Camila Fuentes', '84dbb6b8-354c-4d2b-af7e-6ed591ccccdf', '57ec82a1-49e1-450f-818f-4e2939dd6a80', 'Flete pequeño (camioneta)', date_trunc('hour', now()) - interval '7 days 8 hours', 'La Florida, Santiago', '', 22500, 0.10, 2250, 20250, 'completed', 'released', 'Mastercard', '8436', true, date_trunc('hour', now()) - interval '7 days 8 hours' - interval '32 hours', date_trunc('hour', now()) - interval '7 days 8 hours' - interval '32 hours', date_trunc('hour', now()) - interval '7 days 8 hours' - interval '2 hours', date_trunc('hour', now()) - interval '7 days 8 hours' + interval '3 hours', null),
+  ('34a240d6-fd8c-4a22-aca1-ba018585bf1b', null, 'Felipe Contreras', 'cf7a1244-29c8-47e2-897c-47404773c041', '1a5f3639-e544-41ec-a351-09654b3ff1bf', 'Mudanza de departamento', date_trunc('hour', now()) - interval '5 days 11 hours', 'Maipú, Santiago', '', 104500, 0.10, 10450, 94050, 'completed', 'released', 'Visa', '4091', true, date_trunc('hour', now()) - interval '5 days 11 hours' - interval '44 hours', date_trunc('hour', now()) - interval '5 days 11 hours' - interval '44 hours', date_trunc('hour', now()) - interval '5 days 11 hours' - interval '5 hours', date_trunc('hour', now()) - interval '5 days 11 hours' + interval '1 hours', null),
+  ('b3f9d71a-d991-45a9-af9a-b36f7436b3ad', null, 'Sebastián Díaz', '84dbb6b8-354c-4d2b-af7e-6ed591ccccdf', '6949ad8c-3568-4c24-b7cc-1d71a928986d', 'Traslado de electrodomésticos', date_trunc('hour', now()) - interval '6 days 7 hours', 'La Florida, Santiago', '', 19000, 0.10, 1900, 17100, 'completed', 'released', 'Visa', '9166', true, date_trunc('hour', now()) - interval '6 days 7 hours' - interval '46 hours', date_trunc('hour', now()) - interval '6 days 7 hours' - interval '46 hours', date_trunc('hour', now()) - interval '6 days 7 hours' - interval '3 hours', date_trunc('hour', now()) - interval '6 days 7 hours' + interval '2 hours', null),
+  ('2909c442-2762-4be3-92a7-18a29c6f2127', null, 'Daniela López', 'eaf1c674-7440-4b31-a730-3bac63afcd67', 'ef9174f5-3218-4edc-acbb-7cc67f6f07c6', 'Perfilado de barba', date_trunc('hour', now()) - interval '12 days 8 hours', 'Vitacura, Santiago', '', 7000, 0.10, 700, 6300, 'cancelled', 'refunded', 'Mastercard', '6682', true, date_trunc('hour', now()) - interval '12 days 8 hours' - interval '17 hours', date_trunc('hour', now()) - interval '12 days 8 hours' - interval '17 hours', null, null, date_trunc('hour', now()) - interval '12 days 8 hours' - interval '1 hours'),
+  ('b7cf9f81-d61f-477f-b46e-b48924d18efb', null, 'Constanza Pérez', 'a126a1a2-e8e0-40e6-8709-31a593bd54c4', 'e2dec1cf-fa56-4dab-b694-ca44b1508790', 'Pedicure spa', date_trunc('hour', now()) - interval '19 days 7 hours', 'Ñuñoa, Santiago', '', 18000, 0.10, 1800, 16200, 'completed', 'released', 'Visa', '3832', true, date_trunc('hour', now()) - interval '19 days 7 hours' - interval '42 hours', date_trunc('hour', now()) - interval '19 days 7 hours' - interval '42 hours', date_trunc('hour', now()) - interval '19 days 7 hours' - interval '4 hours', date_trunc('hour', now()) - interval '19 days 7 hours' + interval '2 hours', null),
+  ('9dd08e63-0f8f-4de6-8011-6af326af6ae0', null, 'Joaquín Araya', 'e93239c1-2cbc-4c1c-8806-9ce82065a391', 'a4380c0b-5ed0-4b66-bbf4-97c7a5f1fd87', 'Clase de yoga a domicilio', date_trunc('hour', now()) - interval '2 days 3 hours', 'Las Condes, Santiago', '', 19500, 0.10, 1950, 17550, 'completed', 'released', 'Mastercard', '8925', true, date_trunc('hour', now()) - interval '2 days 3 hours' - interval '16 hours', date_trunc('hour', now()) - interval '2 days 3 hours' - interval '16 hours', date_trunc('hour', now()) - interval '2 days 3 hours' - interval '2 hours', date_trunc('hour', now()) - interval '2 days 3 hours' + interval '3 hours', null),
+  ('f530ceb1-0c55-4835-91af-76ee78405fde', null, 'Antonia Castillo', 'e8db3107-9731-426a-95c8-b7b209fda5df', '5e38d1a6-45aa-4482-82c7-3bf6844e17b0', 'Masaje relajante (60 min)', date_trunc('hour', now()) - interval '13 days 7 hours', 'Macul, Santiago', '', 24500, 0.10, 2450, 22050, 'completed', 'released', 'Visa', '3609', true, date_trunc('hour', now()) - interval '13 days 7 hours' - interval '25 hours', date_trunc('hour', now()) - interval '13 days 7 hours' - interval '25 hours', date_trunc('hour', now()) - interval '13 days 7 hours' - interval '4 hours', date_trunc('hour', now()) - interval '13 days 7 hours' + interval '3 hours', null),
+  ('97df9626-9953-4767-8276-95be3825f716', null, 'Constanza Pérez', '72b1d28e-1dab-4ce2-917d-655bcde14e1a', '76cb80dd-c072-4cc5-842a-397300f7a803', 'Visita técnica', date_trunc('hour', now()) - interval '5 days 7 hours', 'Recoleta, Santiago', '', 17000, 0.10, 1700, 15300, 'completed', 'released', 'American Express', '4419', true, date_trunc('hour', now()) - interval '5 days 7 hours' - interval '50 hours', date_trunc('hour', now()) - interval '5 days 7 hours' - interval '50 hours', date_trunc('hour', now()) - interval '5 days 7 hours' - interval '2 hours', date_trunc('hour', now()) - interval '5 days 7 hours' + interval '3 hours', null),
+  ('fe3f6fc6-efdc-45e4-acdd-05adce64c1ec', null, 'Antonia Castillo', '038dc3e5-a685-4217-a4ac-f8381db74622', '94456425-b6d7-48e6-ab0c-5ed9eea7b199', 'Flete pequeño (camioneta)', date_trunc('hour', now()) - interval '29 days 9 hours', 'Recoleta, Santiago', '', 21500, 0.10, 2150, 19350, 'completed', 'released', 'Visa', '1043', true, date_trunc('hour', now()) - interval '29 days 9 hours' - interval '11 hours', date_trunc('hour', now()) - interval '29 days 9 hours' - interval '11 hours', date_trunc('hour', now()) - interval '29 days 9 hours' - interval '5 hours', date_trunc('hour', now()) - interval '29 days 9 hours' + interval '3 hours', null),
+  ('620254d9-0de3-49d0-b587-67127d7c4542', null, 'Sebastián Díaz', 'e93239c1-2cbc-4c1c-8806-9ce82065a391', '701c3bbd-630c-451e-9fca-455f287066c6', 'Sesión personalizada (1 h)', date_trunc('hour', now()) - interval '25 days 3 hours', 'Las Condes, Santiago', '', 21500, 0.10, 2150, 19350, 'completed', 'released', 'American Express', '7472', true, date_trunc('hour', now()) - interval '25 days 3 hours' - interval '21 hours', date_trunc('hour', now()) - interval '25 days 3 hours' - interval '21 hours', date_trunc('hour', now()) - interval '25 days 3 hours' - interval '5 hours', date_trunc('hour', now()) - interval '25 days 3 hours' + interval '1 hours', null),
+  ('88ecc787-a644-490c-8685-8a7f9f4a7264', null, 'Constanza Pérez', '6c027df6-274d-44e2-9b43-fb580d738756', 'bd404ecc-b4f8-4094-9285-68a6e9745976', 'Diagnóstico con scanner', date_trunc('hour', now()) - interval '11 days 3 hours', 'La Florida, Santiago', '', 17000, 0.10, 1700, 15300, 'completed', 'released', 'Mastercard', '8043', true, date_trunc('hour', now()) - interval '11 days 3 hours' - interval '66 hours', date_trunc('hour', now()) - interval '11 days 3 hours' - interval '66 hours', date_trunc('hour', now()) - interval '11 days 3 hours' - interval '3 hours', date_trunc('hour', now()) - interval '11 days 3 hours' + interval '2 hours', null),
+  ('06adb0f6-5e6a-4de8-b463-127fafe517b1', null, 'Vicente Torres', 'e8db3107-9731-426a-95c8-b7b209fda5df', '76edc06e-3536-4bbf-a2cf-a4869771a664', 'Sesión de kinesiología', date_trunc('hour', now()) - interval '27 days 10 hours', 'Macul, Santiago', '', 31500, 0.10, 3150, 28350, 'completed', 'released', 'Mastercard', '6646', true, date_trunc('hour', now()) - interval '27 days 10 hours' - interval '68 hours', date_trunc('hour', now()) - interval '27 days 10 hours' - interval '68 hours', date_trunc('hour', now()) - interval '27 days 10 hours' - interval '2 hours', date_trunc('hour', now()) - interval '27 days 10 hours' + interval '1 hours', null),
+  ('4512bb72-7b0d-4cc0-a097-73d029a8a4ae', null, 'Antonia Castillo', 'e98639c7-d4ca-48a6-a6ee-63cfb4d6cdee', '8890312e-cee0-473c-924c-d2fae54654b4', 'Copia de llaves a domicilio', date_trunc('hour', now()) - interval '1 days 5 hours', 'Ñuñoa, Santiago', '', 7500, 0.10, 750, 6750, 'completed', 'released', 'Mastercard', '3206', true, date_trunc('hour', now()) - interval '1 days 5 hours' - interval '42 hours', date_trunc('hour', now()) - interval '1 days 5 hours' - interval '42 hours', date_trunc('hour', now()) - interval '1 days 5 hours' - interval '3 hours', date_trunc('hour', now()) - interval '1 days 5 hours' + interval '2 hours', null),
+  ('3895204a-8a78-4219-b0f4-ff42916131a4', null, 'Nicolás Soto', '04668b65-f1f1-4c55-8331-2629af38bf28', '174aa5b8-dacd-4f4f-806b-80c86effb87b', 'Apertura de puerta', date_trunc('hour', now()) - interval '28 days 7 hours', 'Quinta Normal, Santiago', '', 22000, 0.10, 2200, 19800, 'cancelled', 'refunded', 'Visa', '2012', true, date_trunc('hour', now()) - interval '28 days 7 hours' - interval '45 hours', date_trunc('hour', now()) - interval '28 days 7 hours' - interval '45 hours', null, null, date_trunc('hour', now()) - interval '28 days 7 hours' - interval '1 hours'),
+  ('c49bf22e-cae9-411f-9308-18fd847fae82', null, 'Isidora Flores', '56a6fe01-d0e1-4082-acbe-cff62e37a1ee', '40af8f20-be93-4400-b336-0a1b37ca18be', 'Visita de cuidado', date_trunc('hour', now()) - interval '17 days 7 hours', 'Ñuñoa, Santiago', '', 9500, 0.10, 950, 8550, 'completed', 'released', 'Mastercard', '6787', true, date_trunc('hour', now()) - interval '17 days 7 hours' - interval '15 hours', date_trunc('hour', now()) - interval '17 days 7 hours' - interval '15 hours', date_trunc('hour', now()) - interval '17 days 7 hours' - interval '5 hours', date_trunc('hour', now()) - interval '17 days 7 hours' + interval '1 hours', null),
+  ('b286bd55-c7dc-4bec-ad88-c83b1056697b', null, 'Constanza Pérez', '2212694b-5386-4035-a407-56bd97c88898', '601ae1c1-6fa4-4bbe-a9bd-5c3f41f895ab', 'Visita de cuidado', date_trunc('hour', now()) - interval '21 days 14 hours', 'Providencia, Santiago', '', 10000, 0.10, 1000, 9000, 'completed', 'released', 'American Express', '9810', true, date_trunc('hour', now()) - interval '21 days 14 hours' - interval '34 hours', date_trunc('hour', now()) - interval '21 days 14 hours' - interval '34 hours', date_trunc('hour', now()) - interval '21 days 14 hours' - interval '4 hours', date_trunc('hour', now()) - interval '21 days 14 hours' + interval '1 hours', null),
+  ('38b2ce15-e76d-4b35-b0bc-9d2247478f9e', null, 'Martín Vargas', '91a90c87-f01b-4b22-b9bd-810c3d9d4a8e', '59d1f7f5-0070-45cc-bab0-4eaee7f25114', 'Clase de yoga a domicilio', date_trunc('hour', now()) - interval '6 days 10 hours', 'San Miguel, Santiago', '', 17000, 0.10, 1700, 15300, 'completed', 'released', 'Visa', '1499', true, date_trunc('hour', now()) - interval '6 days 10 hours' - interval '14 hours', date_trunc('hour', now()) - interval '6 days 10 hours' - interval '14 hours', date_trunc('hour', now()) - interval '6 days 10 hours' - interval '4 hours', date_trunc('hour', now()) - interval '6 days 10 hours' + interval '2 hours', null),
+  ('c4f606d6-6ff9-437e-96af-f62c06a62ef8', null, 'Valentina Rojas', '30b96d13-d742-4d87-a8c2-8b57d556fd4d', '504ccdbd-2218-412a-9eca-b76d014dc9ff', 'Maquillaje social', date_trunc('hour', now()) - interval '8 days 5 hours', 'Providencia, Santiago', '', 32000, 0.10, 3200, 28800, 'completed', 'released', 'American Express', '5492', true, date_trunc('hour', now()) - interval '8 days 5 hours' - interval '67 hours', date_trunc('hour', now()) - interval '8 days 5 hours' - interval '67 hours', date_trunc('hour', now()) - interval '8 days 5 hours' - interval '5 hours', date_trunc('hour', now()) - interval '8 days 5 hours' + interval '2 hours', null),
+  ('d5ab9a36-26f2-4af0-9acf-5128440ce652', null, 'Diego Morales', '6440560d-e728-4a57-846d-274d5df9de11', '316421f1-b2ed-4beb-9e52-6fa3a3177bd9', 'Corte niño', date_trunc('hour', now()) - interval '0 days 11 hours', 'San Miguel, Santiago', '', 11500, 0.10, 1150, 10350, 'completed', 'released', 'Visa', '6056', true, date_trunc('hour', now()) - interval '0 days 11 hours' - interval '62 hours', date_trunc('hour', now()) - interval '0 days 11 hours' - interval '62 hours', date_trunc('hour', now()) - interval '0 days 11 hours' - interval '2 hours', date_trunc('hour', now()) - interval '0 days 11 hours' + interval '2 hours', null),
+  ('0104fd10-e399-427c-99da-6cb99ccb3a9c', null, 'Catalina Sepúlveda', '89dbd0a8-7a51-4002-bbb7-ad99a708f5cf', 'eba6352e-c32d-4c39-924c-3f5ad6027bc5', 'Clase de guitarra (1 h)', date_trunc('hour', now()) - interval '14 days 12 hours', 'Ñuñoa, Santiago', '', 12000, 0.10, 1200, 10800, 'completed', 'released', 'Visa', '3507', true, date_trunc('hour', now()) - interval '14 days 12 hours' - interval '66 hours', date_trunc('hour', now()) - interval '14 days 12 hours' - interval '66 hours', date_trunc('hour', now()) - interval '14 days 12 hours' - interval '5 hours', date_trunc('hour', now()) - interval '14 days 12 hours' + interval '1 hours', null),
+  ('9ed70764-baff-46e1-8b02-43cb5fa8683d', null, 'Antonia Castillo', '40f848b1-1350-4629-8a6d-cb12028a92a5', '62bcf4a7-4e66-41fd-bf78-fa2f1f0eff36', 'Pintura de habitación', date_trunc('hour', now()) - interval '3 days 5 hours', 'Independencia, Santiago', '', 62500, 0.10, 6250, 56250, 'completed', 'released', 'Visa', '7024', true, date_trunc('hour', now()) - interval '3 days 5 hours' - interval '60 hours', date_trunc('hour', now()) - interval '3 days 5 hours' - interval '60 hours', date_trunc('hour', now()) - interval '3 days 5 hours' - interval '4 hours', date_trunc('hour', now()) - interval '3 days 5 hours' + interval '2 hours', null),
+  ('39e5e764-8208-45b3-b2bc-0d7da3873332', null, 'Francisca Espinoza', '6c027df6-274d-44e2-9b43-fb580d738756', 'bd404ecc-b4f8-4094-9285-68a6e9745976', 'Diagnóstico con scanner', date_trunc('hour', now()) - interval '0 days 10 hours', 'La Florida, Santiago', '', 17000, 0.10, 1700, 15300, 'completed', 'released', 'Visa', '8779', true, date_trunc('hour', now()) - interval '0 days 10 hours' - interval '22 hours', date_trunc('hour', now()) - interval '0 days 10 hours' - interval '22 hours', date_trunc('hour', now()) - interval '0 days 10 hours' - interval '4 hours', date_trunc('hour', now()) - interval '0 days 10 hours' + interval '3 hours', null),
+  ('09e7c2b2-4b1c-460b-9eae-a6e8cbee5592', null, 'Valentina Rojas', '3324e783-baf5-43f1-bab8-4de6d46700f4', 'e8b06ab3-11bf-4971-880f-1f8700ea9520', 'Revisión de tablero', date_trunc('hour', now()) - interval '11 days 9 hours', 'Maipú, Santiago', '', 25500, 0.10, 2550, 22950, 'completed', 'released', 'Mastercard', '2712', true, date_trunc('hour', now()) - interval '11 days 9 hours' - interval '39 hours', date_trunc('hour', now()) - interval '11 days 9 hours' - interval '39 hours', date_trunc('hour', now()) - interval '11 days 9 hours' - interval '5 hours', date_trunc('hour', now()) - interval '11 days 9 hours' + interval '1 hours', null),
+  ('f7fede77-dd58-4f1d-b163-f9911dfdaad3', null, 'Tomás Martínez', '038dc3e5-a685-4217-a4ac-f8381db74622', '94456425-b6d7-48e6-ab0c-5ed9eea7b199', 'Flete pequeño (camioneta)', date_trunc('hour', now()) - interval '10 days 10 hours', 'Recoleta, Santiago', '', 21500, 0.10, 2150, 19350, 'completed', 'released', 'Visa', '4008', true, date_trunc('hour', now()) - interval '10 days 10 hours' - interval '65 hours', date_trunc('hour', now()) - interval '10 days 10 hours' - interval '65 hours', date_trunc('hour', now()) - interval '10 days 10 hours' - interval '4 hours', date_trunc('hour', now()) - interval '10 days 10 hours' + interval '3 hours', null),
+  ('1f1fa4ec-74ba-43ac-bc9d-4346c50aef5f', null, 'Sebastián Díaz', 'eaf1c674-7440-4b31-a730-3bac63afcd67', 'ef9174f5-3218-4edc-acbb-7cc67f6f07c6', 'Perfilado de barba', date_trunc('hour', now()) - interval '12 days 6 hours', 'Vitacura, Santiago', '', 7000, 0.10, 700, 6300, 'completed', 'released', 'Visa', '8052', true, date_trunc('hour', now()) - interval '12 days 6 hours' - interval '34 hours', date_trunc('hour', now()) - interval '12 days 6 hours' - interval '34 hours', date_trunc('hour', now()) - interval '12 days 6 hours' - interval '3 hours', date_trunc('hour', now()) - interval '12 days 6 hours' + interval '2 hours', null),
+  ('963adbba-4bc9-4c25-8269-fd62cae96e49', null, 'Matías González', 'd9c1a3d8-172c-4c9f-8188-2d9ce7a53bf9', 'cdc90ab9-7486-4b07-ae20-d2d490b69bbc', 'Cambio de aceite y filtro a domicilio', date_trunc('hour', now()) - interval '13 days 10 hours', 'Ñuñoa, Santiago', '', 43000, 0.10, 4300, 38700, 'completed', 'released', 'American Express', '5929', true, date_trunc('hour', now()) - interval '13 days 10 hours' - interval '30 hours', date_trunc('hour', now()) - interval '13 days 10 hours' - interval '30 hours', date_trunc('hour', now()) - interval '13 days 10 hours' - interval '2 hours', date_trunc('hour', now()) - interval '13 days 10 hours' + interval '2 hours', null),
+  ('98b588a4-21be-4fff-b098-c22023f1c9a0', null, 'Martín Vargas', '5ecf1516-e771-422b-a212-460b401d2ace', 'b6abf26e-b442-4c3b-a356-f080a450dd11', 'Pulido y encerado', date_trunc('hour', now()) - interval '23 days 10 hours', 'Lo Barnechea, Santiago', '', 31000, 0.10, 3100, 27900, 'completed', 'released', 'Mastercard', '3266', true, date_trunc('hour', now()) - interval '23 days 10 hours' - interval '16 hours', date_trunc('hour', now()) - interval '23 days 10 hours' - interval '16 hours', date_trunc('hour', now()) - interval '23 days 10 hours' - interval '4 hours', date_trunc('hour', now()) - interval '23 days 10 hours' + interval '2 hours', null),
+  ('ac66e1df-3c84-48bc-b5fe-616deb3b46d0', null, 'Diego Morales', 'a126a1a2-e8e0-40e6-8709-31a593bd54c4', 'e2dec1cf-fa56-4dab-b694-ca44b1508790', 'Pedicure spa', date_trunc('hour', now()) - interval '23 days 12 hours', 'Ñuñoa, Santiago', '', 18000, 0.10, 1800, 16200, 'completed', 'released', 'American Express', '4774', true, date_trunc('hour', now()) - interval '23 days 12 hours' - interval '58 hours', date_trunc('hour', now()) - interval '23 days 12 hours' - interval '58 hours', date_trunc('hour', now()) - interval '23 days 12 hours' - interval '5 hours', date_trunc('hour', now()) - interval '23 days 12 hours' + interval '3 hours', null),
+  ('0fef93d3-f147-49e2-9938-ddb5a910a87a', null, 'Martín Vargas', 'bc5d2e20-ff73-4cd3-a8a9-394d8b797600', '5f4db7a8-238f-4b39-9591-3aafc2f19ed9', 'Limpieza de alfombra', date_trunc('hour', now()) - interval '11 days 12 hours', 'Macul, Santiago', '', 26000, 0.10, 2600, 23400, 'cancelled', 'refunded', 'Visa', '4620', true, date_trunc('hour', now()) - interval '11 days 12 hours' - interval '8 hours', date_trunc('hour', now()) - interval '11 days 12 hours' - interval '8 hours', null, null, date_trunc('hour', now()) - interval '11 days 12 hours' - interval '1 hours'),
+  ('ac485c48-76f8-49a3-9a67-bb88f8b960eb', null, 'Martín Vargas', '5ecf1516-e771-422b-a212-460b401d2ace', 'b6abf26e-b442-4c3b-a356-f080a450dd11', 'Pulido y encerado', date_trunc('hour', now()) - interval '22 days 4 hours', 'Lo Barnechea, Santiago', '', 31000, 0.10, 3100, 27900, 'completed', 'released', 'American Express', '4069', true, date_trunc('hour', now()) - interval '22 days 4 hours' - interval '55 hours', date_trunc('hour', now()) - interval '22 days 4 hours' - interval '55 hours', date_trunc('hour', now()) - interval '22 days 4 hours' - interval '2 hours', date_trunc('hour', now()) - interval '22 days 4 hours' + interval '1 hours', null),
+  ('898eaa82-c991-445e-ae4f-fd62a8c4257d', null, 'Camila Fuentes', '6d90ed63-a3f1-4ad7-b7df-11bbefdd808d', '4cda5263-beaf-4878-bada-eb7d30e086e0', 'Limpieza de sofá 3 cuerpos', date_trunc('hour', now()) - interval '2 days 3 hours', 'Estación Central, Santiago', '', 25000, 0.10, 2500, 22500, 'cancelled', 'refunded', 'Mastercard', '4591', true, date_trunc('hour', now()) - interval '2 days 3 hours' - interval '26 hours', date_trunc('hour', now()) - interval '2 days 3 hours' - interval '26 hours', null, null, date_trunc('hour', now()) - interval '2 days 3 hours' - interval '1 hours'),
+  ('fb156bb5-b338-4baa-af89-e5cb6f805c5b', null, 'Fernanda Silva', '038dc3e5-a685-4217-a4ac-f8381db74622', 'e44d52fe-48cd-4e7f-82bf-23552398d4e5', 'Traslado de electrodomésticos', date_trunc('hour', now()) - interval '28 days 9 hours', 'Recoleta, Santiago', '', 19500, 0.10, 1950, 17550, 'rejected', 'refunded', 'American Express', '6978', true, date_trunc('hour', now()) - interval '28 days 9 hours' - interval '46 hours', date_trunc('hour', now()) - interval '28 days 9 hours' - interval '46 hours', null, null, date_trunc('hour', now()) - interval '28 days 9 hours' - interval '1 hours'),
+  ('da58b91f-0290-425c-bb23-7abd79144dae', null, 'Felipe Contreras', '04a74629-0705-47e5-9a10-aca554f5f1eb', '167b484a-26e6-419d-8c58-55ba112ac4af', 'Paseo de perro (1 hora)', date_trunc('hour', now()) - interval '4 days 12 hours', 'Las Condes, Santiago', '', 6500, 0.10, 650, 5850, 'completed', 'released', 'Mastercard', '7971', true, date_trunc('hour', now()) - interval '4 days 12 hours' - interval '41 hours', date_trunc('hour', now()) - interval '4 days 12 hours' - interval '41 hours', date_trunc('hour', now()) - interval '4 days 12 hours' - interval '3 hours', date_trunc('hour', now()) - interval '4 days 12 hours' + interval '1 hours', null),
+  ('a78decb1-5924-4bac-8433-6450ca251e3a', null, 'Fernanda Silva', '3324e783-baf5-43f1-bab8-4de6d46700f4', 'a0f1ac28-c597-4d32-aaac-95ed7ca547ad', 'Instalación de lámpara', date_trunc('hour', now()) - interval '9 days 9 hours', 'Maipú, Santiago', '', 13500, 0.10, 1350, 12150, 'completed', 'released', 'Visa', '5534', true, date_trunc('hour', now()) - interval '9 days 9 hours' - interval '36 hours', date_trunc('hour', now()) - interval '9 days 9 hours' - interval '36 hours', date_trunc('hour', now()) - interval '9 days 9 hours' - interval '3 hours', date_trunc('hour', now()) - interval '9 days 9 hours' + interval '2 hours', null),
+  ('7a737837-b598-4dd2-91f2-d8394f3b8e78', null, 'Vicente Torres', 'e98639c7-d4ca-48a6-a6ee-63cfb4d6cdee', '108866d4-ce2e-4d38-8faa-4b90c415d646', 'Cambio de chapa', date_trunc('hour', now()) - interval '1 days 14 hours', 'Ñuñoa, Santiago', '', 31000, 0.10, 3100, 27900, 'completed', 'released', 'American Express', '9793', true, date_trunc('hour', now()) - interval '1 days 14 hours' - interval '37 hours', date_trunc('hour', now()) - interval '1 days 14 hours' - interval '37 hours', date_trunc('hour', now()) - interval '1 days 14 hours' - interval '5 hours', date_trunc('hour', now()) - interval '1 days 14 hours' + interval '1 hours', null),
+  ('ea0ef517-186d-444f-9bff-8c727e60fdd4', null, 'Antonia Castillo', 'a126a1a2-e8e0-40e6-8709-31a593bd54c4', '02425ad6-98f1-4dca-b75b-e618c4b8035f', 'Manicure semipermanente', date_trunc('hour', now()) - interval '3 days 14 hours', 'Ñuñoa, Santiago', '', 15000, 0.10, 1500, 13500, 'completed', 'released', 'Visa', '4323', true, date_trunc('hour', now()) - interval '3 days 14 hours' - interval '13 hours', date_trunc('hour', now()) - interval '3 days 14 hours' - interval '13 hours', date_trunc('hour', now()) - interval '3 days 14 hours' - interval '5 hours', date_trunc('hour', now()) - interval '3 days 14 hours' + interval '1 hours', null),
+  ('0de9158a-d782-4a3e-8608-28c097f99462', null, 'Benjamín Reyes', '6440560d-e728-4a57-846d-274d5df9de11', 'd8267125-f492-4eda-857c-ddc66db7932f', 'Perfilado de barba', date_trunc('hour', now()) - interval '16 days 9 hours', 'San Miguel, Santiago', '', 7500, 0.10, 750, 6750, 'completed', 'released', 'Visa', '5917', true, date_trunc('hour', now()) - interval '16 days 9 hours' - interval '47 hours', date_trunc('hour', now()) - interval '16 days 9 hours' - interval '47 hours', date_trunc('hour', now()) - interval '16 days 9 hours' - interval '3 hours', date_trunc('hour', now()) - interval '16 days 9 hours' + interval '1 hours', null),
+  ('c9ec4ae4-b168-47cd-aad7-f636ea7c87cd', null, 'Sebastián Díaz', '3306e833-91f6-43a3-95e2-cd2c087c46d6', '7825fb05-6c82-4c8a-be5a-3829b4b160bd', 'Revisión de tablero', date_trunc('hour', now()) - interval '25 days 14 hours', 'Ñuñoa, Santiago', '', 27000, 0.10, 2700, 24300, 'completed', 'released', 'Visa', '7343', true, date_trunc('hour', now()) - interval '25 days 14 hours' - interval '69 hours', date_trunc('hour', now()) - interval '25 days 14 hours' - interval '69 hours', date_trunc('hour', now()) - interval '25 days 14 hours' - interval '5 hours', date_trunc('hour', now()) - interval '25 days 14 hours' + interval '1 hours', null),
+  ('1abc841f-1429-4b1c-989c-f293bca7ba11', null, 'Camila Fuentes', '510722d6-14c0-4a53-be41-04f809905d8f', '33235d52-b0fe-4aaf-9af0-4e4c67108b09', 'Maquillaje social', date_trunc('hour', now()) - interval '3 days 3 hours', 'Las Condes, Santiago', '', 26000, 0.10, 2600, 23400, 'completed', 'released', 'Visa', '5229', true, date_trunc('hour', now()) - interval '3 days 3 hours' - interval '25 hours', date_trunc('hour', now()) - interval '3 days 3 hours' - interval '25 hours', date_trunc('hour', now()) - interval '3 days 3 hours' - interval '5 hours', date_trunc('hour', now()) - interval '3 days 3 hours' + interval '3 hours', null),
+  ('6f609dff-22a9-4a14-b7e8-4c4ee8aee462', null, 'Nicolás Soto', '2212694b-5386-4035-a407-56bd97c88898', '601ae1c1-6fa4-4bbe-a9bd-5c3f41f895ab', 'Visita de cuidado', date_trunc('hour', now()) - interval '3 days 14 hours', 'Providencia, Santiago', '', 10000, 0.10, 1000, 9000, 'completed', 'released', 'Visa', '1017', true, date_trunc('hour', now()) - interval '3 days 14 hours' - interval '50 hours', date_trunc('hour', now()) - interval '3 days 14 hours' - interval '50 hours', date_trunc('hour', now()) - interval '3 days 14 hours' - interval '2 hours', date_trunc('hour', now()) - interval '3 days 14 hours' + interval '2 hours', null),
+  ('08f973a9-ce1d-464c-8431-fabc2b051c24', null, 'Tomás Martínez', '022988b6-9151-4b81-b793-4b6fcf8cf948', '50b3582e-a8c9-4920-87f3-dd2d58ebbb16', 'Pulido y encerado', date_trunc('hour', now()) - interval '14 days 8 hours', 'Vitacura, Santiago', '', 30500, 0.10, 3050, 27450, 'completed', 'released', 'American Express', '8454', true, date_trunc('hour', now()) - interval '14 days 8 hours' - interval '16 hours', date_trunc('hour', now()) - interval '14 days 8 hours' - interval '16 hours', date_trunc('hour', now()) - interval '14 days 8 hours' - interval '2 hours', date_trunc('hour', now()) - interval '14 days 8 hours' + interval '3 hours', null),
+  ('ef332f4e-c676-418b-86ce-2271b963ef81', null, 'Catalina Sepúlveda', 'cf7a1244-29c8-47e2-897c-47404773c041', '1a5f3639-e544-41ec-a351-09654b3ff1bf', 'Mudanza de departamento', date_trunc('hour', now()) - interval '9 days 4 hours', 'Maipú, Santiago', '', 104500, 0.10, 10450, 94050, 'completed', 'released', 'Visa', '1223', true, date_trunc('hour', now()) - interval '9 days 4 hours' - interval '22 hours', date_trunc('hour', now()) - interval '9 days 4 hours' - interval '22 hours', date_trunc('hour', now()) - interval '9 days 4 hours' - interval '3 hours', date_trunc('hour', now()) - interval '9 days 4 hours' + interval '3 hours', null),
+  ('b6412bff-5a0b-45bc-9d87-c033d7007b97', null, 'Isidora Flores', 'd7665b14-0cca-458a-bd35-94e7aa5dc48f', 'a967a284-0373-4e38-96ac-69678ff4d73c', 'Corte a domicilio', date_trunc('hour', now()) - interval '18 days 7 hours', 'Santiago Centro, Santiago', '', 12500, 0.10, 1250, 11250, 'completed', 'released', 'American Express', '2763', true, date_trunc('hour', now()) - interval '18 days 7 hours' - interval '24 hours', date_trunc('hour', now()) - interval '18 days 7 hours' - interval '24 hours', date_trunc('hour', now()) - interval '18 days 7 hours' - interval '5 hours', date_trunc('hour', now()) - interval '18 days 7 hours' + interval '1 hours', null),
+  ('d788796a-741d-4540-b2e6-56492c9cd896', null, 'Diego Morales', '89dbd0a8-7a51-4002-bbb7-ad99a708f5cf', '408bc6df-2c2e-47b9-a421-5b28683e3d0e', 'Preparación PAES (1 h)', date_trunc('hour', now()) - interval '0 days 10 hours', 'Ñuñoa, Santiago', '', 18000, 0.10, 1800, 16200, 'completed', 'released', 'Visa', '1690', true, date_trunc('hour', now()) - interval '0 days 10 hours' - interval '60 hours', date_trunc('hour', now()) - interval '0 days 10 hours' - interval '60 hours', date_trunc('hour', now()) - interval '0 days 10 hours' - interval '2 hours', date_trunc('hour', now()) - interval '0 days 10 hours' + interval '3 hours', null),
+  ('6c53cd31-1823-486c-b699-c7be315f8221', null, 'Constanza Pérez', '022988b6-9151-4b81-b793-4b6fcf8cf948', '50b3582e-a8c9-4920-87f3-dd2d58ebbb16', 'Pulido y encerado', date_trunc('hour', now()) + interval '2 days 5 hours', 'Vitacura, Santiago', '', 30500, 0.10, 3050, 27450, 'pending', 'held', 'American Express', '2260', true, date_trunc('hour', now()) + interval '2 days 5 hours' - interval '39 hours', date_trunc('hour', now()) + interval '2 days 5 hours' - interval '39 hours', null, null, null),
+  ('f3127cbe-2111-4c21-b2a3-e8e1faaf6c58', null, 'Antonia Castillo', '56a6fe01-d0e1-4082-acbe-cff62e37a1ee', 'd0d0f0aa-34c3-4cf1-92db-d0b76094bcb2', 'Paseo de perro (1 hora)', date_trunc('hour', now()) - interval '19 days 9 hours', 'Ñuñoa, Santiago', '', 6500, 0.10, 650, 5850, 'rejected', 'refunded', 'Mastercard', '6621', true, date_trunc('hour', now()) - interval '19 days 9 hours' - interval '11 hours', date_trunc('hour', now()) - interval '19 days 9 hours' - interval '11 hours', null, null, date_trunc('hour', now()) - interval '19 days 9 hours' - interval '1 hours'),
+  ('9b196e1e-2063-4740-ba77-b7c914192989', null, 'Felipe Contreras', '72b1d28e-1dab-4ce2-917d-655bcde14e1a', '9862078c-acbc-4b4a-96ca-9b0b765e0742', 'Cambio de enchufe', date_trunc('hour', now()) - interval '11 days 12 hours', 'Recoleta, Santiago', '', 8000, 0.10, 800, 7200, 'completed', 'released', 'American Express', '5058', true, date_trunc('hour', now()) - interval '11 days 12 hours' - interval '55 hours', date_trunc('hour', now()) - interval '11 days 12 hours' - interval '55 hours', date_trunc('hour', now()) - interval '11 days 12 hours' - interval '5 hours', date_trunc('hour', now()) - interval '11 days 12 hours' + interval '2 hours', null),
+  ('c9d35ab5-69a2-4ac9-9494-e20a95c07e1a', null, 'Tomás Martínez', '6c027df6-274d-44e2-9b43-fb580d738756', '29c3b741-77b6-454e-8325-3af5a490df0e', 'Cambio de pastillas de freno', date_trunc('hour', now()) - interval '7 days 13 hours', 'La Florida, Santiago', '', 42500, 0.10, 4250, 38250, 'completed', 'released', 'Visa', '6753', true, date_trunc('hour', now()) - interval '7 days 13 hours' - interval '14 hours', date_trunc('hour', now()) - interval '7 days 13 hours' - interval '14 hours', date_trunc('hour', now()) - interval '7 days 13 hours' - interval '2 hours', date_trunc('hour', now()) - interval '7 days 13 hours' + interval '2 hours', null),
+  ('0fe745f4-182e-4ff8-a7dd-039fe1104287', null, 'Catalina Sepúlveda', '3324e783-baf5-43f1-bab8-4de6d46700f4', 'e8b06ab3-11bf-4971-880f-1f8700ea9520', 'Revisión de tablero', date_trunc('hour', now()) - interval '7 days 10 hours', 'Maipú, Santiago', '', 25500, 0.10, 2550, 22950, 'rejected', 'refunded', 'Mastercard', '6245', true, date_trunc('hour', now()) - interval '7 days 10 hours' - interval '47 hours', date_trunc('hour', now()) - interval '7 days 10 hours' - interval '47 hours', null, null, date_trunc('hour', now()) - interval '7 days 10 hours' - interval '1 hours'),
+  ('4c95adce-9cc1-444e-896f-844e38c45119', null, 'Camila Fuentes', 'e8db3107-9731-426a-95c8-b7b209fda5df', 'ec91e8ca-0ee5-418e-9863-4116a84494cb', 'Masaje descontracturante (60 min)', date_trunc('hour', now()) - interval '24 days 4 hours', 'Macul, Santiago', '', 28000, 0.10, 2800, 25200, 'completed', 'released', 'Mastercard', '1736', true, date_trunc('hour', now()) - interval '24 days 4 hours' - interval '19 hours', date_trunc('hour', now()) - interval '24 days 4 hours' - interval '19 hours', date_trunc('hour', now()) - interval '24 days 4 hours' - interval '3 hours', date_trunc('hour', now()) - interval '24 days 4 hours' + interval '3 hours', null),
+  ('2401e7c4-a386-4a2c-922a-e00cdea2b48b', null, 'Benjamín Reyes', '91a90c87-f01b-4b22-b9bd-810c3d9d4a8e', '59d1f7f5-0070-45cc-bab0-4eaee7f25114', 'Clase de yoga a domicilio', date_trunc('hour', now()) - interval '6 days 5 hours', 'San Miguel, Santiago', '', 17000, 0.10, 1700, 15300, 'cancelled', 'refunded', 'Visa', '5919', true, date_trunc('hour', now()) - interval '6 days 5 hours' - interval '58 hours', date_trunc('hour', now()) - interval '6 days 5 hours' - interval '58 hours', null, null, date_trunc('hour', now()) - interval '6 days 5 hours' - interval '1 hours'),
+  ('80fefe3d-a40f-4e55-87b8-7f7950e67142', null, 'Constanza Pérez', '91a90c87-f01b-4b22-b9bd-810c3d9d4a8e', '59d1f7f5-0070-45cc-bab0-4eaee7f25114', 'Clase de yoga a domicilio', date_trunc('hour', now()) + interval '2 days 8 hours', 'San Miguel, Santiago', '', 17000, 0.10, 1700, 15300, 'pending', 'held', 'Mastercard', '3880', true, date_trunc('hour', now()) + interval '2 days 8 hours' - interval '46 hours', date_trunc('hour', now()) + interval '2 days 8 hours' - interval '46 hours', null, null, null),
+  ('d951a6b1-73b4-4f03-a182-81e3108fe5fb', null, 'Benjamín Reyes', '3324e783-baf5-43f1-bab8-4de6d46700f4', 'e8b06ab3-11bf-4971-880f-1f8700ea9520', 'Revisión de tablero', date_trunc('hour', now()) - interval '20 days 14 hours', 'Maipú, Santiago', '', 25500, 0.10, 2550, 22950, 'completed', 'released', 'Visa', '7291', true, date_trunc('hour', now()) - interval '20 days 14 hours' - interval '21 hours', date_trunc('hour', now()) - interval '20 days 14 hours' - interval '21 hours', date_trunc('hour', now()) - interval '20 days 14 hours' - interval '2 hours', date_trunc('hour', now()) - interval '20 days 14 hours' + interval '2 hours', null),
+  ('41cfdb04-3195-438d-b643-0f202014b432', null, 'Antonia Castillo', '56a6fe01-d0e1-4082-acbe-cff62e37a1ee', 'd0d0f0aa-34c3-4cf1-92db-d0b76094bcb2', 'Paseo de perro (1 hora)', date_trunc('hour', now()) - interval '17 days 4 hours', 'Ñuñoa, Santiago', '', 6500, 0.10, 650, 5850, 'completed', 'released', 'Visa', '5461', true, date_trunc('hour', now()) - interval '17 days 4 hours' - interval '57 hours', date_trunc('hour', now()) - interval '17 days 4 hours' - interval '57 hours', date_trunc('hour', now()) - interval '17 days 4 hours' - interval '2 hours', date_trunc('hour', now()) - interval '17 days 4 hours' + interval '1 hours', null),
+  ('f867c0a7-67f4-48cf-b9b5-d5d7acddf214', null, 'Fernanda Silva', '405c4cd2-0edd-4f15-8e5c-b5257cd00bfe', '2d075d08-4425-4cc5-96e0-d382168d14c3', 'Copia de llaves a domicilio', date_trunc('hour', now()) - interval '14 days 4 hours', 'Santiago Centro, Santiago', '', 8500, 0.10, 850, 7650, 'completed', 'released', 'Mastercard', '7492', true, date_trunc('hour', now()) - interval '14 days 4 hours' - interval '33 hours', date_trunc('hour', now()) - interval '14 days 4 hours' - interval '33 hours', date_trunc('hour', now()) - interval '14 days 4 hours' - interval '5 hours', date_trunc('hour', now()) - interval '14 days 4 hours' + interval '2 hours', null),
+  ('6d0f87c5-f2ca-4cb3-89e5-5863652de469', null, 'Valentina Rojas', '5d71952f-95de-4168-83ea-43094b25a1cb', '0e71f646-8995-4ee8-8e26-0be37cc16f03', 'Corte de pasto (hasta 100 m²)', date_trunc('hour', now()) - interval '21 days 14 hours', 'La Reina, Santiago', '', 16500, 0.10, 1650, 14850, 'completed', 'released', 'American Express', '9342', true, date_trunc('hour', now()) - interval '21 days 14 hours' - interval '38 hours', date_trunc('hour', now()) - interval '21 days 14 hours' - interval '38 hours', date_trunc('hour', now()) - interval '21 days 14 hours' - interval '5 hours', date_trunc('hour', now()) - interval '21 days 14 hours' + interval '2 hours', null),
+  ('bf84f4ca-1586-42c8-a42c-a33aba61c9e0', null, 'Joaquín Araya', '72b1d28e-1dab-4ce2-917d-655bcde14e1a', '76cb80dd-c072-4cc5-842a-397300f7a803', 'Visita técnica', date_trunc('hour', now()) - interval '27 days 3 hours', 'Recoleta, Santiago', '', 17000, 0.10, 1700, 15300, 'rejected', 'refunded', 'Visa', '2330', true, date_trunc('hour', now()) - interval '27 days 3 hours' - interval '24 hours', date_trunc('hour', now()) - interval '27 days 3 hours' - interval '24 hours', null, null, date_trunc('hour', now()) - interval '27 days 3 hours' - interval '1 hours'),
+  ('7a4bdf8b-c169-4a0f-9009-71a1e4438336', null, 'Daniela López', '433c2e40-5e69-4a36-96ca-b2ad28555751', '7f2e8401-5f65-4616-b352-d883133153a9', 'Instalación de repisas o cuadros', date_trunc('hour', now()) - interval '1 days 4 hours', 'Peñalolén, Santiago', '', 10000, 0.10, 1000, 9000, 'completed', 'released', 'Mastercard', '8211', true, date_trunc('hour', now()) - interval '1 days 4 hours' - interval '64 hours', date_trunc('hour', now()) - interval '1 days 4 hours' - interval '64 hours', date_trunc('hour', now()) - interval '1 days 4 hours' - interval '4 hours', date_trunc('hour', now()) - interval '1 days 4 hours' + interval '1 hours', null),
+  ('f7bfb510-662c-4ca8-aa17-19e94c404868', null, 'Valentina Rojas', '91a90c87-f01b-4b22-b9bd-810c3d9d4a8e', '59d1f7f5-0070-45cc-bab0-4eaee7f25114', 'Clase de yoga a domicilio', date_trunc('hour', now()) - interval '23 days 9 hours', 'San Miguel, Santiago', '', 17000, 0.10, 1700, 15300, 'completed', 'released', 'Visa', '2986', true, date_trunc('hour', now()) - interval '23 days 9 hours' - interval '24 hours', date_trunc('hour', now()) - interval '23 days 9 hours' - interval '24 hours', date_trunc('hour', now()) - interval '23 days 9 hours' - interval '2 hours', date_trunc('hour', now()) - interval '23 days 9 hours' + interval '2 hours', null),
+  ('ef2c1fed-192b-44b9-8137-bb18c08e0461', null, 'Tomás Martínez', '6d90ed63-a3f1-4ad7-b7df-11bbefdd808d', '7d0f6321-52b3-4a9f-a8ca-3fbae4835087', 'Limpieza de alfombra', date_trunc('hour', now()) - interval '3 days 8 hours', 'Estación Central, Santiago', '', 28000, 0.10, 2800, 25200, 'completed', 'released', 'Visa', '5802', true, date_trunc('hour', now()) - interval '3 days 8 hours' - interval '19 hours', date_trunc('hour', now()) - interval '3 days 8 hours' - interval '19 hours', date_trunc('hour', now()) - interval '3 days 8 hours' - interval '3 hours', date_trunc('hour', now()) - interval '3 days 8 hours' + interval '3 hours', null),
+  ('31f9427a-a996-47b8-af5a-31b5c664625f', null, 'Antonia Castillo', 'a9253c5b-225d-460c-99a5-00f50503d68e', '7711baa8-bb34-4c18-bb34-80dd918ab74e', 'Preparación PAES (1 h)', date_trunc('hour', now()) - interval '21 days 7 hours', 'La Reina, Santiago', '', 19500, 0.10, 1950, 17550, 'completed', 'released', 'Mastercard', '9646', true, date_trunc('hour', now()) - interval '21 days 7 hours' - interval '69 hours', date_trunc('hour', now()) - interval '21 days 7 hours' - interval '69 hours', date_trunc('hour', now()) - interval '21 days 7 hours' - interval '4 hours', date_trunc('hour', now()) - interval '21 days 7 hours' + interval '1 hours', null),
+  ('7b40b34d-f995-4fd8-bffc-bde496590c57', null, 'Isidora Flores', '50ce16fb-2799-4d43-ae2d-a5967f81f013', 'c832265d-3e31-4399-a3c6-3901f8de60a6', 'Configuración de wifi', date_trunc('hour', now()) - interval '23 days 13 hours', 'Santiago Centro, Santiago', '', 17000, 0.10, 1700, 15300, 'completed', 'released', 'Visa', '9345', true, date_trunc('hour', now()) - interval '23 days 13 hours' - interval '28 hours', date_trunc('hour', now()) - interval '23 days 13 hours' - interval '28 hours', date_trunc('hour', now()) - interval '23 days 13 hours' - interval '5 hours', date_trunc('hour', now()) - interval '23 days 13 hours' + interval '1 hours', null),
+  ('af6e35f5-4dd1-433f-a4f6-dac6ab33791a', null, 'Martín Vargas', 'fdca69b1-6cf6-4837-9d55-8dc3b2d31058', '57276029-9dff-456d-89a0-e079ea71a8a4', 'Lavado de tapiz', date_trunc('hour', now()) - interval '6 days 12 hours', 'San Joaquín, Santiago', '', 37500, 0.10, 3750, 33750, 'completed', 'released', 'Mastercard', '1430', true, date_trunc('hour', now()) - interval '6 days 12 hours' - interval '52 hours', date_trunc('hour', now()) - interval '6 days 12 hours' - interval '52 hours', date_trunc('hour', now()) - interval '6 days 12 hours' - interval '2 hours', date_trunc('hour', now()) - interval '6 days 12 hours' + interval '1 hours', null),
+  ('39a16836-f027-43d0-a3f1-a941210b69a8', null, 'Felipe Contreras', 'e93239c1-2cbc-4c1c-8806-9ce82065a391', '5d48faed-c0f6-45ff-9f41-42297a699b82', 'Plan mensual (8 sesiones)', date_trunc('hour', now()) + interval '4 days 4 hours', 'Las Condes, Santiago', '', 129500, 0.10, 12950, 116550, 'accepted', 'held', 'Visa', '9041', true, date_trunc('hour', now()) + interval '4 days 4 hours' - interval '6 hours', date_trunc('hour', now()) + interval '4 days 4 hours' - interval '6 hours', date_trunc('hour', now()) + interval '4 days 4 hours' - interval '3 hours', null, null),
+  ('5657b1c9-68f4-408a-985a-098936cf97b7', null, 'Francisca Espinoza', 'e98639c7-d4ca-48a6-a6ee-63cfb4d6cdee', '8890312e-cee0-473c-924c-d2fae54654b4', 'Copia de llaves a domicilio', date_trunc('hour', now()) - interval '29 days 4 hours', 'Ñuñoa, Santiago', '', 7500, 0.10, 750, 6750, 'completed', 'released', 'Visa', '9289', true, date_trunc('hour', now()) - interval '29 days 4 hours' - interval '71 hours', date_trunc('hour', now()) - interval '29 days 4 hours' - interval '71 hours', date_trunc('hour', now()) - interval '29 days 4 hours' - interval '3 hours', date_trunc('hour', now()) - interval '29 days 4 hours' + interval '1 hours', null),
+  ('e6ce3105-33ff-4425-805b-1d38a93818df', null, 'Joaquín Araya', '4c27a439-86ff-4d62-9263-2e766ca3c848', '2744fd50-fc35-4677-86b8-2cd0521b721d', 'Diagnóstico con scanner', date_trunc('hour', now()) - interval '3 days 8 hours', 'Providencia, Santiago', '', 18000, 0.10, 1800, 16200, 'completed', 'released', 'Mastercard', '2148', true, date_trunc('hour', now()) - interval '3 days 8 hours' - interval '69 hours', date_trunc('hour', now()) - interval '3 days 8 hours' - interval '69 hours', date_trunc('hour', now()) - interval '3 days 8 hours' - interval '2 hours', date_trunc('hour', now()) - interval '3 days 8 hours' + interval '3 hours', null),
+  ('9460fd31-6299-4778-8e9d-41a5318f6512', null, 'Fernanda Silva', '004d8d8b-bde9-4d79-b8b0-043cebeb3b19', '6f9092fd-c64d-464c-9c84-fec6bc3aca06', 'Masaje descontracturante (60 min)', date_trunc('hour', now()) - interval '0 days 5 hours', 'Providencia, Santiago', '', 28000, 0.10, 2800, 25200, 'completed', 'released', 'Visa', '4047', true, date_trunc('hour', now()) - interval '0 days 5 hours' - interval '9 hours', date_trunc('hour', now()) - interval '0 days 5 hours' - interval '9 hours', date_trunc('hour', now()) - interval '0 days 5 hours' - interval '2 hours', date_trunc('hour', now()) - interval '0 days 5 hours' + interval '1 hours', null),
+  ('972f1b6f-5f9b-48c1-bf55-cf99078c95ee', null, 'Vicente Torres', '510722d6-14c0-4a53-be41-04f809905d8f', '33235d52-b0fe-4aaf-9af0-4e4c67108b09', 'Maquillaje social', date_trunc('hour', now()) - interval '10 days 9 hours', 'Las Condes, Santiago', '', 26000, 0.10, 2600, 23400, 'completed', 'released', 'Mastercard', '4161', true, date_trunc('hour', now()) - interval '10 days 9 hours' - interval '55 hours', date_trunc('hour', now()) - interval '10 days 9 hours' - interval '55 hours', date_trunc('hour', now()) - interval '10 days 9 hours' - interval '5 hours', date_trunc('hour', now()) - interval '10 days 9 hours' + interval '1 hours', null),
+  ('ed9c3730-c7df-4759-961d-565d247d7d30', null, 'Benjamín Reyes', '04a03d6c-390d-412f-9b8b-e1b0fc84184c', 'cb9949f0-7e1e-47c6-a4ac-55f448ba5214', 'Limpieza de alfombra', date_trunc('hour', now()) - interval '22 days 3 hours', 'Las Condes, Santiago', '', 22500, 0.10, 2250, 20250, 'completed', 'released', 'Mastercard', '1378', true, date_trunc('hour', now()) - interval '22 days 3 hours' - interval '26 hours', date_trunc('hour', now()) - interval '22 days 3 hours' - interval '26 hours', date_trunc('hour', now()) - interval '22 days 3 hours' - interval '3 hours', date_trunc('hour', now()) - interval '22 days 3 hours' + interval '1 hours', null),
+  ('4d86ffab-6511-4def-96f8-5b12bfba28b2', null, 'Constanza Pérez', '5d71952f-95de-4168-83ea-43094b25a1cb', '0e71f646-8995-4ee8-8e26-0be37cc16f03', 'Corte de pasto (hasta 100 m²)', date_trunc('hour', now()) - interval '9 days 5 hours', 'La Reina, Santiago', '', 16500, 0.10, 1650, 14850, 'completed', 'released', 'Mastercard', '4490', true, date_trunc('hour', now()) - interval '9 days 5 hours' - interval '12 hours', date_trunc('hour', now()) - interval '9 days 5 hours' - interval '12 hours', date_trunc('hour', now()) - interval '9 days 5 hours' - interval '2 hours', date_trunc('hour', now()) - interval '9 days 5 hours' + interval '1 hours', null),
+  ('c1911947-2204-4e9d-a9f7-c9b504fb507c', null, 'Benjamín Reyes', '4c27a439-86ff-4d62-9263-2e766ca3c848', '46a4e83f-36af-4c67-aa63-e6b223d897ed', 'Cambio de batería', date_trunc('hour', now()) - interval '12 days 11 hours', 'Providencia, Santiago', '', 15500, 0.10, 1550, 13950, 'completed', 'released', 'Visa', '6596', true, date_trunc('hour', now()) - interval '12 days 11 hours' - interval '30 hours', date_trunc('hour', now()) - interval '12 days 11 hours' - interval '30 hours', date_trunc('hour', now()) - interval '12 days 11 hours' - interval '2 hours', date_trunc('hour', now()) - interval '12 days 11 hours' + interval '3 hours', null),
+  ('7d8c8332-b2ad-443c-957c-3dd51dc92b20', null, 'Javiera Muñoz', '5d71952f-95de-4168-83ea-43094b25a1cb', 'b16408d2-d72f-460a-9ec2-d7ded5ebb570', 'Poda de arbustos', date_trunc('hour', now()) - interval '9 days 11 hours', 'La Reina, Santiago', '', 22500, 0.10, 2250, 20250, 'completed', 'released', 'Visa', '2990', true, date_trunc('hour', now()) - interval '9 days 11 hours' - interval '66 hours', date_trunc('hour', now()) - interval '9 days 11 hours' - interval '66 hours', date_trunc('hour', now()) - interval '9 days 11 hours' - interval '2 hours', date_trunc('hour', now()) - interval '9 days 11 hours' + interval '1 hours', null),
+  ('fed26259-9ba2-4ef1-8e46-d29783ec6054', null, 'Javiera Muñoz', '97dd5002-e9b3-49ed-982c-1f32046cbff7', '7fe38627-b06c-4c69-947c-c3ff08da052b', 'Poda de arbustos', date_trunc('hour', now()) - interval '0 days 6 hours', 'Las Condes, Santiago', '', 23000, 0.10, 2300, 20700, 'completed', 'released', 'Visa', '4984', true, date_trunc('hour', now()) - interval '0 days 6 hours' - interval '53 hours', date_trunc('hour', now()) - interval '0 days 6 hours' - interval '53 hours', date_trunc('hour', now()) - interval '0 days 6 hours' - interval '2 hours', date_trunc('hour', now()) - interval '0 days 6 hours' + interval '2 hours', null),
+  ('6f717cb5-872b-41c0-b8de-b4c6a8d62ce4', null, 'Nicolás Soto', '50ce16fb-2799-4d43-ae2d-a5967f81f013', '3b115c70-aad6-498c-b639-e82d5d68d47b', 'Formateo + respaldo', date_trunc('hour', now()) - interval '8 days 13 hours', 'Santiago Centro, Santiago', '', 22000, 0.10, 2200, 19800, 'cancelled', 'refunded', 'American Express', '2842', true, date_trunc('hour', now()) - interval '8 days 13 hours' - interval '32 hours', date_trunc('hour', now()) - interval '8 days 13 hours' - interval '32 hours', null, null, date_trunc('hour', now()) - interval '8 days 13 hours' - interval '1 hours'),
+  ('1255c615-f5fb-4308-a9d4-bb2e3c98c3b6', null, 'Catalina Sepúlveda', 'cf7a1244-29c8-47e2-897c-47404773c041', '1a5f3639-e544-41ec-a351-09654b3ff1bf', 'Mudanza de departamento', date_trunc('hour', now()) - interval '15 days 12 hours', 'Maipú, Santiago', '', 104500, 0.10, 10450, 94050, 'completed', 'released', 'Mastercard', '6923', true, date_trunc('hour', now()) - interval '15 days 12 hours' - interval '68 hours', date_trunc('hour', now()) - interval '15 days 12 hours' - interval '68 hours', date_trunc('hour', now()) - interval '15 days 12 hours' - interval '4 hours', date_trunc('hour', now()) - interval '15 days 12 hours' + interval '3 hours', null),
+  ('9240616e-f386-4ce9-8754-9ea47ecb9856', null, 'Diego Morales', '30b96d13-d742-4d87-a8c2-8b57d556fd4d', '504ccdbd-2218-412a-9eca-b76d014dc9ff', 'Maquillaje social', date_trunc('hour', now()) - interval '8 days 10 hours', 'Providencia, Santiago', '', 32000, 0.10, 3200, 28800, 'cancelled', 'refunded', 'American Express', '6487', true, date_trunc('hour', now()) - interval '8 days 10 hours' - interval '19 hours', date_trunc('hour', now()) - interval '8 days 10 hours' - interval '19 hours', null, null, date_trunc('hour', now()) - interval '8 days 10 hours' - interval '1 hours'),
+  ('be1f32be-733c-4ff2-8346-06e7063db501', null, 'Benjamín Reyes', '04a03d6c-390d-412f-9b8b-e1b0fc84184c', 'cb9949f0-7e1e-47c6-a4ac-55f448ba5214', 'Limpieza de alfombra', date_trunc('hour', now()) - interval '10 days 7 hours', 'Las Condes, Santiago', '', 22500, 0.10, 2250, 20250, 'completed', 'released', 'American Express', '6506', true, date_trunc('hour', now()) - interval '10 days 7 hours' - interval '58 hours', date_trunc('hour', now()) - interval '10 days 7 hours' - interval '58 hours', date_trunc('hour', now()) - interval '10 days 7 hours' - interval '5 hours', date_trunc('hour', now()) - interval '10 days 7 hours' + interval '2 hours', null),
+  ('08160e3c-3392-4694-a617-932f41be4664', null, 'Nicolás Soto', '7197e33c-da06-4cff-a0ef-ee2dc7245e42', '9b013682-530f-4d31-8cc1-aabbcadd845b', 'Corte de pasto (hasta 100 m²)', date_trunc('hour', now()) - interval '8 days 8 hours', 'Maipú, Santiago', '', 17500, 0.10, 1750, 15750, 'completed', 'released', 'Visa', '1191', true, date_trunc('hour', now()) - interval '8 days 8 hours' - interval '43 hours', date_trunc('hour', now()) - interval '8 days 8 hours' - interval '43 hours', date_trunc('hour', now()) - interval '8 days 8 hours' - interval '5 hours', date_trunc('hour', now()) - interval '8 days 8 hours' + interval '2 hours', null),
+  ('fcbb03ee-9903-4907-b19a-63702a94fc97', null, 'Benjamín Reyes', 'e8db3107-9731-426a-95c8-b7b209fda5df', '76edc06e-3536-4bbf-a2cf-a4869771a664', 'Sesión de kinesiología', date_trunc('hour', now()) - interval '21 days 12 hours', 'Macul, Santiago', '', 31500, 0.10, 3150, 28350, 'cancelled', 'refunded', 'American Express', '3229', true, date_trunc('hour', now()) - interval '21 days 12 hours' - interval '6 hours', date_trunc('hour', now()) - interval '21 days 12 hours' - interval '6 hours', null, null, date_trunc('hour', now()) - interval '21 days 12 hours' - interval '1 hours'),
+  ('86eb077b-d743-48fe-b0b2-f07fc8aeeaf5', null, 'Valentina Rojas', 'd9c1a3d8-172c-4c9f-8188-2d9ce7a53bf9', '48a084a4-f1fa-4357-a835-70e2aff40560', 'Cambio de batería', date_trunc('hour', now()) - interval '2 days 8 hours', 'Ñuñoa, Santiago', '', 14000, 0.10, 1400, 12600, 'completed', 'released', 'Mastercard', '3577', true, date_trunc('hour', now()) - interval '2 days 8 hours' - interval '62 hours', date_trunc('hour', now()) - interval '2 days 8 hours' - interval '62 hours', date_trunc('hour', now()) - interval '2 days 8 hours' - interval '4 hours', date_trunc('hour', now()) - interval '2 days 8 hours' + interval '1 hours', null),
+  ('12ae919a-2841-45b5-a1a5-5a937b77f0c6', null, 'Vicente Torres', '6440560d-e728-4a57-846d-274d5df9de11', 'd8267125-f492-4eda-857c-ddc66db7932f', 'Perfilado de barba', date_trunc('hour', now()) - interval '2 days 7 hours', 'San Miguel, Santiago', '', 7500, 0.10, 750, 6750, 'completed', 'released', 'Visa', '4369', true, date_trunc('hour', now()) - interval '2 days 7 hours' - interval '36 hours', date_trunc('hour', now()) - interval '2 days 7 hours' - interval '36 hours', date_trunc('hour', now()) - interval '2 days 7 hours' - interval '3 hours', date_trunc('hour', now()) - interval '2 days 7 hours' + interval '3 hours', null),
+  ('d1e849ef-9004-41a9-a538-3731ba49ee6b', null, 'Joaquín Araya', '04a74629-0705-47e5-9a10-aca554f5f1eb', 'c70c88f0-fecb-45f7-a700-0541e9c7d108', 'Baño y corte canino', date_trunc('hour', now()) - interval '12 days 14 hours', 'Las Condes, Santiago', '', 18500, 0.10, 1850, 16650, 'completed', 'released', 'American Express', '3805', true, date_trunc('hour', now()) - interval '12 days 14 hours' - interval '8 hours', date_trunc('hour', now()) - interval '12 days 14 hours' - interval '8 hours', date_trunc('hour', now()) - interval '12 days 14 hours' - interval '5 hours', date_trunc('hour', now()) - interval '12 days 14 hours' + interval '1 hours', null),
+  ('f2bcc910-d56a-47f2-bf72-47bc36fffdbd', null, 'Javiera Muñoz', '022988b6-9151-4b81-b793-4b6fcf8cf948', 'fe44f295-8e64-447c-a676-a9e43254d0a8', 'Lavado exterior + interior', date_trunc('hour', now()) - interval '0 days 6 hours', 'Vitacura, Santiago', '', 14000, 0.10, 1400, 12600, 'rejected', 'refunded', 'Visa', '7427', true, date_trunc('hour', now()) - interval '0 days 6 hours' - interval '39 hours', date_trunc('hour', now()) - interval '0 days 6 hours' - interval '39 hours', null, null, date_trunc('hour', now()) - interval '0 days 6 hours' - interval '1 hours'),
+  ('b2f73068-9c10-4294-8dd7-d51285e28393', null, 'Fernanda Silva', 'cf7a1244-29c8-47e2-897c-47404773c041', '1a5f3639-e544-41ec-a351-09654b3ff1bf', 'Mudanza de departamento', date_trunc('hour', now()) - interval '14 days 8 hours', 'Maipú, Santiago', '', 104500, 0.10, 10450, 94050, 'completed', 'released', 'American Express', '1788', true, date_trunc('hour', now()) - interval '14 days 8 hours' - interval '21 hours', date_trunc('hour', now()) - interval '14 days 8 hours' - interval '21 hours', date_trunc('hour', now()) - interval '14 days 8 hours' - interval '4 hours', date_trunc('hour', now()) - interval '14 days 8 hours' + interval '3 hours', null),
+  ('934faa1e-aafb-4b10-a11d-a23f026fbdec', null, 'Tomás Martínez', '433c2e40-5e69-4a36-96ca-b2ad28555751', '2b9c7d70-fa43-4c9b-8a85-c9e2fca681ba', 'Pintura de habitación', date_trunc('hour', now()) + interval '2 days 10 hours', 'Peñalolén, Santiago', '', 59500, 0.10, 5950, 53550, 'pending', 'held', 'Visa', '3678', true, date_trunc('hour', now()) + interval '2 days 10 hours' - interval '18 hours', date_trunc('hour', now()) + interval '2 days 10 hours' - interval '18 hours', null, null, null),
+  ('d4fe0428-fe57-4710-90d6-820e7c94eb87', null, 'Constanza Pérez', '3306e833-91f6-43a3-95e2-cd2c087c46d6', '0476b102-6079-4e8f-b6dc-92611e8a8a10', 'Instalación de lámpara', date_trunc('hour', now()) - interval '1 days 9 hours', 'Ñuñoa, Santiago', '', 10500, 0.10, 1050, 9450, 'completed', 'released', 'American Express', '2641', true, date_trunc('hour', now()) - interval '1 days 9 hours' - interval '27 hours', date_trunc('hour', now()) - interval '1 days 9 hours' - interval '27 hours', date_trunc('hour', now()) - interval '1 days 9 hours' - interval '5 hours', date_trunc('hour', now()) - interval '1 days 9 hours' + interval '2 hours', null),
+  ('99dc7ac2-ea54-48ba-83c4-10a742cdb52c', null, 'Francisca Espinoza', '3d53da8f-5814-4897-8d69-cdbe8187429a', '0bd75caf-caad-458c-9c34-26dee8eaf01b', 'Visita y diagnóstico', date_trunc('hour', now()) - interval '10 days 6 hours', 'Providencia, Santiago', '', 15500, 0.10, 1550, 13950, 'completed', 'released', 'Mastercard', '1615', true, date_trunc('hour', now()) - interval '10 days 6 hours' - interval '65 hours', date_trunc('hour', now()) - interval '10 days 6 hours' - interval '65 hours', date_trunc('hour', now()) - interval '10 days 6 hours' - interval '2 hours', date_trunc('hour', now()) - interval '10 days 6 hours' + interval '3 hours', null),
+  ('5f6732ee-8cd6-4642-82a1-649201aa7a1d', null, 'Isidora Flores', 'eaf1c674-7440-4b31-a730-3bac63afcd67', 'ef9174f5-3218-4edc-acbb-7cc67f6f07c6', 'Perfilado de barba', date_trunc('hour', now()) - interval '2 days 13 hours', 'Vitacura, Santiago', '', 7000, 0.10, 700, 6300, 'completed', 'released', 'Mastercard', '3401', true, date_trunc('hour', now()) - interval '2 days 13 hours' - interval '58 hours', date_trunc('hour', now()) - interval '2 days 13 hours' - interval '58 hours', date_trunc('hour', now()) - interval '2 days 13 hours' - interval '5 hours', date_trunc('hour', now()) - interval '2 days 13 hours' + interval '1 hours', null),
+  ('c958a89f-8b3f-404d-aa2b-ea2a120979c0', null, 'Tomás Martínez', 'fdca69b1-6cf6-4837-9d55-8dc3b2d31058', '57276029-9dff-456d-89a0-e079ea71a8a4', 'Lavado de tapiz', date_trunc('hour', now()) - interval '26 days 11 hours', 'San Joaquín, Santiago', '', 37500, 0.10, 3750, 33750, 'completed', 'released', 'Visa', '5449', true, date_trunc('hour', now()) - interval '26 days 11 hours' - interval '20 hours', date_trunc('hour', now()) - interval '26 days 11 hours' - interval '20 hours', date_trunc('hour', now()) - interval '26 days 11 hours' - interval '3 hours', date_trunc('hour', now()) - interval '26 days 11 hours' + interval '2 hours', null),
+  ('2ac97a87-d906-495c-a628-13a64f902be6', null, 'Nicolás Soto', 'e93239c1-2cbc-4c1c-8806-9ce82065a391', '5d48faed-c0f6-45ff-9f41-42297a699b82', 'Plan mensual (8 sesiones)', date_trunc('hour', now()) - interval '22 days 5 hours', 'Las Condes, Santiago', '', 129500, 0.10, 12950, 116550, 'completed', 'released', 'Mastercard', '2434', true, date_trunc('hour', now()) - interval '22 days 5 hours' - interval '46 hours', date_trunc('hour', now()) - interval '22 days 5 hours' - interval '46 hours', date_trunc('hour', now()) - interval '22 days 5 hours' - interval '4 hours', date_trunc('hour', now()) - interval '22 days 5 hours' + interval '1 hours', null),
+  ('a4dfc204-996e-4a48-b174-8a2f6231d211', null, 'Constanza Pérez', 'fdca69b1-6cf6-4837-9d55-8dc3b2d31058', 'f74f0e9f-8e5d-4241-838e-c3f2407285cb', 'Lavado exterior + interior', date_trunc('hour', now()) - interval '2 days 3 hours', 'San Joaquín, Santiago', '', 16500, 0.10, 1650, 14850, 'completed', 'released', 'Visa', '6670', true, date_trunc('hour', now()) - interval '2 days 3 hours' - interval '46 hours', date_trunc('hour', now()) - interval '2 days 3 hours' - interval '46 hours', date_trunc('hour', now()) - interval '2 days 3 hours' - interval '2 hours', date_trunc('hour', now()) - interval '2 days 3 hours' + interval '2 hours', null),
+  ('435a4e9e-a54e-4b2f-a6c7-c0ce259a5773', null, 'Sebastián Díaz', '7197e33c-da06-4cff-a0ef-ee2dc7245e42', '9b013682-530f-4d31-8cc1-aabbcadd845b', 'Corte de pasto (hasta 100 m²)', date_trunc('hour', now()) - interval '19 days 7 hours', 'Maipú, Santiago', '', 17500, 0.10, 1750, 15750, 'completed', 'released', 'Mastercard', '2922', true, date_trunc('hour', now()) - interval '19 days 7 hours' - interval '6 hours', date_trunc('hour', now()) - interval '19 days 7 hours' - interval '6 hours', date_trunc('hour', now()) - interval '19 days 7 hours' - interval '4 hours', date_trunc('hour', now()) - interval '19 days 7 hours' + interval '1 hours', null),
+  ('1c08efef-f16b-41b4-abe7-40187c33f2d3', null, 'Vicente Torres', '384f9f55-6774-47b8-bda5-60b2e5de04d3', '07d9d607-e3d8-4340-8bc6-8b6d9c9d8347', 'Clase de yoga a domicilio', date_trunc('hour', now()) + interval '4 days 4 hours', 'Ñuñoa, Santiago', '', 19000, 0.10, 1900, 17100, 'accepted', 'held', 'Mastercard', '5367', true, date_trunc('hour', now()) + interval '4 days 4 hours' - interval '7 hours', date_trunc('hour', now()) + interval '4 days 4 hours' - interval '7 hours', date_trunc('hour', now()) + interval '4 days 4 hours' - interval '3 hours', null, null),
+  ('0f52d63e-9f01-4517-bf80-fbe33c7cde9c', null, 'Diego Morales', '04a03d6c-390d-412f-9b8b-e1b0fc84184c', '15ea15b1-ec48-48e7-ad3a-f12e91092806', 'Limpieza de sofá 3 cuerpos', date_trunc('hour', now()) - interval '20 days 3 hours', 'Las Condes, Santiago', '', 32000, 0.10, 3200, 28800, 'completed', 'released', 'Visa', '3563', true, date_trunc('hour', now()) - interval '20 days 3 hours' - interval '25 hours', date_trunc('hour', now()) - interval '20 days 3 hours' - interval '25 hours', date_trunc('hour', now()) - interval '20 days 3 hours' - interval '5 hours', date_trunc('hour', now()) - interval '20 days 3 hours' + interval '2 hours', null),
+  ('bf689e20-94c4-41ac-927d-c36b552265b1', null, 'Felipe Contreras', 'e93239c1-2cbc-4c1c-8806-9ce82065a391', '701c3bbd-630c-451e-9fca-455f287066c6', 'Sesión personalizada (1 h)', date_trunc('hour', now()) - interval '5 days 12 hours', 'Las Condes, Santiago', '', 21500, 0.10, 2150, 19350, 'completed', 'released', 'American Express', '4928', true, date_trunc('hour', now()) - interval '5 days 12 hours' - interval '71 hours', date_trunc('hour', now()) - interval '5 days 12 hours' - interval '71 hours', date_trunc('hour', now()) - interval '5 days 12 hours' - interval '2 hours', date_trunc('hour', now()) - interval '5 days 12 hours' + interval '3 hours', null),
+  ('277b363a-cf03-4565-8773-59336e7d3904', null, 'Francisca Espinoza', '6440560d-e728-4a57-846d-274d5df9de11', '316421f1-b2ed-4beb-9e52-6fa3a3177bd9', 'Corte niño', date_trunc('hour', now()) - interval '16 days 11 hours', 'San Miguel, Santiago', '', 11500, 0.10, 1150, 10350, 'completed', 'released', 'Visa', '7471', true, date_trunc('hour', now()) - interval '16 days 11 hours' - interval '60 hours', date_trunc('hour', now()) - interval '16 days 11 hours' - interval '60 hours', date_trunc('hour', now()) - interval '16 days 11 hours' - interval '4 hours', date_trunc('hour', now()) - interval '16 days 11 hours' + interval '3 hours', null),
+  ('9b785b75-3731-4d8b-81c1-b9a50f9440f7', null, 'Francisca Espinoza', '2212694b-5386-4035-a407-56bd97c88898', '230ff34d-62b5-4ddb-95aa-9652b74151ef', 'Paseo de perro (1 hora)', date_trunc('hour', now()) - interval '24 days 11 hours', 'Providencia, Santiago', '', 6500, 0.10, 650, 5850, 'completed', 'released', 'American Express', '8353', true, date_trunc('hour', now()) - interval '24 days 11 hours' - interval '53 hours', date_trunc('hour', now()) - interval '24 days 11 hours' - interval '53 hours', date_trunc('hour', now()) - interval '24 days 11 hours' - interval '5 hours', date_trunc('hour', now()) - interval '24 days 11 hours' + interval '3 hours', null),
+  ('474631b3-e4c2-4b69-9e6d-8d6486ee5f42', null, 'Antonia Castillo', 'd7665b14-0cca-458a-bd35-94e7aa5dc48f', 'a967a284-0373-4e38-96ac-69678ff4d73c', 'Corte a domicilio', date_trunc('hour', now()) - interval '22 days 12 hours', 'Santiago Centro, Santiago', '', 12500, 0.10, 1250, 11250, 'cancelled', 'refunded', 'Visa', '4806', true, date_trunc('hour', now()) - interval '22 days 12 hours' - interval '36 hours', date_trunc('hour', now()) - interval '22 days 12 hours' - interval '36 hours', null, null, date_trunc('hour', now()) - interval '22 days 12 hours' - interval '1 hours'),
+  ('348510e5-9030-4726-8764-e4ef5058c105', null, 'Javiera Muñoz', 'bc5d2e20-ff73-4cd3-a8a9-394d8b797600', '5f4db7a8-238f-4b39-9591-3aafc2f19ed9', 'Limpieza de alfombra', date_trunc('hour', now()) - interval '17 days 7 hours', 'Macul, Santiago', '', 26000, 0.10, 2600, 23400, 'completed', 'released', 'Mastercard', '9445', true, date_trunc('hour', now()) - interval '17 days 7 hours' - interval '66 hours', date_trunc('hour', now()) - interval '17 days 7 hours' - interval '66 hours', date_trunc('hour', now()) - interval '17 days 7 hours' - interval '2 hours', date_trunc('hour', now()) - interval '17 days 7 hours' + interval '3 hours', null),
+  ('6281fa64-f44e-4899-8661-30fb35314ba9', null, 'Fernanda Silva', 'eaf1c674-7440-4b31-a730-3bac63afcd67', 'ef9174f5-3218-4edc-acbb-7cc67f6f07c6', 'Perfilado de barba', date_trunc('hour', now()) - interval '7 days 13 hours', 'Vitacura, Santiago', '', 7000, 0.10, 700, 6300, 'completed', 'released', 'Mastercard', '7710', true, date_trunc('hour', now()) - interval '7 days 13 hours' - interval '66 hours', date_trunc('hour', now()) - interval '7 days 13 hours' - interval '66 hours', date_trunc('hour', now()) - interval '7 days 13 hours' - interval '2 hours', date_trunc('hour', now()) - interval '7 days 13 hours' + interval '3 hours', null),
+  ('16a30a90-6abc-439f-b0e4-6467e1aa19fd', null, 'Joaquín Araya', '510722d6-14c0-4a53-be41-04f809905d8f', '81750892-1173-47ca-a380-5d3e4fab0f91', 'Peinado para evento', date_trunc('hour', now()) - interval '4 days 11 hours', 'Las Condes, Santiago', '', 27500, 0.10, 2750, 24750, 'completed', 'released', 'Mastercard', '7965', true, date_trunc('hour', now()) - interval '4 days 11 hours' - interval '69 hours', date_trunc('hour', now()) - interval '4 days 11 hours' - interval '69 hours', date_trunc('hour', now()) - interval '4 days 11 hours' - interval '5 hours', date_trunc('hour', now()) - interval '4 days 11 hours' + interval '1 hours', null),
+  ('e54f578d-b193-4751-948a-811835fdb5df', null, 'Camila Fuentes', '510722d6-14c0-4a53-be41-04f809905d8f', '33235d52-b0fe-4aaf-9af0-4e4c67108b09', 'Maquillaje social', date_trunc('hour', now()) - interval '0 days 9 hours', 'Las Condes, Santiago', '', 26000, 0.10, 2600, 23400, 'completed', 'released', 'Mastercard', '2148', true, date_trunc('hour', now()) - interval '0 days 9 hours' - interval '61 hours', date_trunc('hour', now()) - interval '0 days 9 hours' - interval '61 hours', date_trunc('hour', now()) - interval '0 days 9 hours' - interval '5 hours', date_trunc('hour', now()) - interval '0 days 9 hours' + interval '2 hours', null),
+  ('5f0d0ce6-bd04-418d-92ce-728a4f331604', null, 'Valentina Rojas', '04668b65-f1f1-4c55-8331-2629af38bf28', '174aa5b8-dacd-4f4f-806b-80c86effb87b', 'Apertura de puerta', date_trunc('hour', now()) - interval '10 days 6 hours', 'Quinta Normal, Santiago', '', 22000, 0.10, 2200, 19800, 'rejected', 'refunded', 'Mastercard', '1502', true, date_trunc('hour', now()) - interval '10 days 6 hours' - interval '54 hours', date_trunc('hour', now()) - interval '10 days 6 hours' - interval '54 hours', null, null, date_trunc('hour', now()) - interval '10 days 6 hours' - interval '1 hours'),
+  ('56ea3f11-7c9d-43f9-a691-217ac8723a1c', null, 'Francisca Espinoza', '56a6fe01-d0e1-4082-acbe-cff62e37a1ee', '40af8f20-be93-4400-b336-0a1b37ca18be', 'Visita de cuidado', date_trunc('hour', now()) - interval '21 days 12 hours', 'Ñuñoa, Santiago', '', 9500, 0.10, 950, 8550, 'completed', 'released', 'American Express', '1731', true, date_trunc('hour', now()) - interval '21 days 12 hours' - interval '43 hours', date_trunc('hour', now()) - interval '21 days 12 hours' - interval '43 hours', date_trunc('hour', now()) - interval '21 days 12 hours' - interval '5 hours', date_trunc('hour', now()) - interval '21 days 12 hours' + interval '1 hours', null),
+  ('75edde6a-e754-47f2-9e36-effef59b85f3', null, 'Antonia Castillo', '56a6fe01-d0e1-4082-acbe-cff62e37a1ee', 'd0d0f0aa-34c3-4cf1-92db-d0b76094bcb2', 'Paseo de perro (1 hora)', date_trunc('hour', now()) - interval '12 days 8 hours', 'Ñuñoa, Santiago', '', 6500, 0.10, 650, 5850, 'completed', 'released', 'Mastercard', '3665', true, date_trunc('hour', now()) - interval '12 days 8 hours' - interval '52 hours', date_trunc('hour', now()) - interval '12 days 8 hours' - interval '52 hours', date_trunc('hour', now()) - interval '12 days 8 hours' - interval '2 hours', date_trunc('hour', now()) - interval '12 days 8 hours' + interval '1 hours', null),
+  ('4579998e-418e-4f6d-a3ae-7db930d4f0f7', null, 'Benjamín Reyes', '6d90ed63-a3f1-4ad7-b7df-11bbefdd808d', '7d0f6321-52b3-4a9f-a8ca-3fbae4835087', 'Limpieza de alfombra', date_trunc('hour', now()) - interval '28 days 3 hours', 'Estación Central, Santiago', '', 28000, 0.10, 2800, 25200, 'completed', 'released', 'Visa', '8320', true, date_trunc('hour', now()) - interval '28 days 3 hours' - interval '22 hours', date_trunc('hour', now()) - interval '28 days 3 hours' - interval '22 hours', date_trunc('hour', now()) - interval '28 days 3 hours' - interval '3 hours', date_trunc('hour', now()) - interval '28 days 3 hours' + interval '2 hours', null),
+  ('253eaeec-197d-45cb-a731-fd942c6842ed', null, 'Fernanda Silva', '6c027df6-274d-44e2-9b43-fb580d738756', '40b2036a-cd6d-41bc-8a11-7d9eccaf0ae9', 'Cambio de batería', date_trunc('hour', now()) - interval '20 days 8 hours', 'La Florida, Santiago', '', 15000, 0.10, 1500, 13500, 'completed', 'released', 'American Express', '4324', true, date_trunc('hour', now()) - interval '20 days 8 hours' - interval '18 hours', date_trunc('hour', now()) - interval '20 days 8 hours' - interval '18 hours', date_trunc('hour', now()) - interval '20 days 8 hours' - interval '3 hours', date_trunc('hour', now()) - interval '20 days 8 hours' + interval '1 hours', null),
+  ('5e97c209-5a3e-4914-871b-e41e4488900a', null, 'Fernanda Silva', '0324286d-e54f-45e7-899c-a903fe574d0d', '22776b28-5890-4266-a20f-0ad24b9c46f8', 'Inglés conversacional (1 h)', date_trunc('hour', now()) - interval '5 days 6 hours', 'Providencia, Santiago', '', 12000, 0.10, 1200, 10800, 'completed', 'released', 'Visa', '1407', true, date_trunc('hour', now()) - interval '5 days 6 hours' - interval '14 hours', date_trunc('hour', now()) - interval '5 days 6 hours' - interval '14 hours', date_trunc('hour', now()) - interval '5 days 6 hours' - interval '5 hours', date_trunc('hour', now()) - interval '5 days 6 hours' + interval '3 hours', null),
+  ('99cf5d72-9ff9-49da-a59f-931a3dc58219', null, 'Diego Morales', 'd9c1a3d8-172c-4c9f-8188-2d9ce7a53bf9', '48a084a4-f1fa-4357-a835-70e2aff40560', 'Cambio de batería', date_trunc('hour', now()) - interval '1 days 3 hours', 'Ñuñoa, Santiago', '', 14000, 0.10, 1400, 12600, 'completed', 'released', 'Visa', '4495', true, date_trunc('hour', now()) - interval '1 days 3 hours' - interval '11 hours', date_trunc('hour', now()) - interval '1 days 3 hours' - interval '11 hours', date_trunc('hour', now()) - interval '1 days 3 hours' - interval '3 hours', date_trunc('hour', now()) - interval '1 days 3 hours' + interval '1 hours', null),
+  ('7d236ca1-c23b-444b-b4f7-03f0e7ab1414', null, 'Javiera Muñoz', '3324e783-baf5-43f1-bab8-4de6d46700f4', 'e8b06ab3-11bf-4971-880f-1f8700ea9520', 'Revisión de tablero', date_trunc('hour', now()) - interval '9 days 14 hours', 'Maipú, Santiago', '', 25500, 0.10, 2550, 22950, 'completed', 'released', 'American Express', '1929', true, date_trunc('hour', now()) - interval '9 days 14 hours' - interval '70 hours', date_trunc('hour', now()) - interval '9 days 14 hours' - interval '70 hours', date_trunc('hour', now()) - interval '9 days 14 hours' - interval '2 hours', date_trunc('hour', now()) - interval '9 days 14 hours' + interval '1 hours', null),
+  ('06fefa23-e271-44df-9365-38a1351430ba', null, 'Sebastián Díaz', '5d71952f-95de-4168-83ea-43094b25a1cb', '6bc696f2-058b-46b2-96cb-eb124a4f55a4', 'Mantención mensual de jardín', date_trunc('hour', now()) - interval '8 days 6 hours', 'La Reina, Santiago', '', 64000, 0.10, 6400, 57600, 'completed', 'released', 'Mastercard', '3882', true, date_trunc('hour', now()) - interval '8 days 6 hours' - interval '26 hours', date_trunc('hour', now()) - interval '8 days 6 hours' - interval '26 hours', date_trunc('hour', now()) - interval '8 days 6 hours' - interval '2 hours', date_trunc('hour', now()) - interval '8 days 6 hours' + interval '2 hours', null),
+  ('d3b14756-a69a-4401-b79c-95f61ba6e81e', null, 'Joaquín Araya', '6440560d-e728-4a57-846d-274d5df9de11', '316421f1-b2ed-4beb-9e52-6fa3a3177bd9', 'Corte niño', date_trunc('hour', now()) + interval '4 days 4 hours', 'San Miguel, Santiago', '', 11500, 0.10, 1150, 10350, 'accepted', 'held', 'Mastercard', '8636', true, date_trunc('hour', now()) + interval '4 days 4 hours' - interval '71 hours', date_trunc('hour', now()) + interval '4 days 4 hours' - interval '71 hours', date_trunc('hour', now()) + interval '4 days 4 hours' - interval '3 hours', null, null),
+  ('afac1053-8f10-4bf9-963a-c9aa40d07029', null, 'Nicolás Soto', '5ecf1516-e771-422b-a212-460b401d2ace', 'b6abf26e-b442-4c3b-a356-f080a450dd11', 'Pulido y encerado', date_trunc('hour', now()) - interval '18 days 6 hours', 'Lo Barnechea, Santiago', '', 31000, 0.10, 3100, 27900, 'completed', 'released', 'Visa', '8006', true, date_trunc('hour', now()) - interval '18 days 6 hours' - interval '60 hours', date_trunc('hour', now()) - interval '18 days 6 hours' - interval '60 hours', date_trunc('hour', now()) - interval '18 days 6 hours' - interval '3 hours', date_trunc('hour', now()) - interval '18 days 6 hours' + interval '2 hours', null),
+  ('5ac7370e-daee-4ed1-b7f8-a45c7a4c5c4c', null, 'Diego Morales', '04a03d6c-390d-412f-9b8b-e1b0fc84184c', '15ea15b1-ec48-48e7-ad3a-f12e91092806', 'Limpieza de sofá 3 cuerpos', date_trunc('hour', now()) - interval '27 days 13 hours', 'Las Condes, Santiago', '', 32000, 0.10, 3200, 28800, 'completed', 'released', 'Mastercard', '9573', true, date_trunc('hour', now()) - interval '27 days 13 hours' - interval '70 hours', date_trunc('hour', now()) - interval '27 days 13 hours' - interval '70 hours', date_trunc('hour', now()) - interval '27 days 13 hours' - interval '5 hours', date_trunc('hour', now()) - interval '27 days 13 hours' + interval '3 hours', null),
+  ('9614487a-e16f-4c42-9a4c-fdebb26c3983', null, 'Benjamín Reyes', '2212694b-5386-4035-a407-56bd97c88898', '601ae1c1-6fa4-4bbe-a9bd-5c3f41f895ab', 'Visita de cuidado', date_trunc('hour', now()) - interval '20 days 6 hours', 'Providencia, Santiago', '', 10000, 0.10, 1000, 9000, 'completed', 'released', 'Mastercard', '4162', true, date_trunc('hour', now()) - interval '20 days 6 hours' - interval '47 hours', date_trunc('hour', now()) - interval '20 days 6 hours' - interval '47 hours', date_trunc('hour', now()) - interval '20 days 6 hours' - interval '5 hours', date_trunc('hour', now()) - interval '20 days 6 hours' + interval '2 hours', null),
+  ('a4f37af1-d5ab-4c80-9887-d7f8601f4012', null, 'Joaquín Araya', '89a16328-c475-4c8f-9ed4-984459932f65', '65d3371e-d226-4b56-a316-3265f2c65de7', 'Cambio de llave o monomando', date_trunc('hour', now()) - interval '22 days 14 hours', 'Santiago Centro, Santiago', '', 17500, 0.10, 1750, 15750, 'completed', 'released', 'Visa', '6124', true, date_trunc('hour', now()) - interval '22 days 14 hours' - interval '15 hours', date_trunc('hour', now()) - interval '22 days 14 hours' - interval '15 hours', date_trunc('hour', now()) - interval '22 days 14 hours' - interval '2 hours', date_trunc('hour', now()) - interval '22 days 14 hours' + interval '3 hours', null)
+on conflict (id) do nothing;
+
+-- Métricas públicas de cada perfil (histórico: valoración, trabajos, seguidores)
+update public.providers p set rating_avg = v.rating_avg, rating_count = v.rating_count,
+  jobs_count = v.jobs_count, followers_count = v.followers_count
+from (values
+  ('5d71952f-95de-4168-83ea-43094b25a1cb'::uuid, 4.53, 23, 136, 2074),
+  ('97dd5002-e9b3-49ed-982c-1f32046cbff7'::uuid, 4.53, 29, 138, 363),
+  ('7197e33c-da06-4cff-a0ef-ee2dc7245e42'::uuid, 4.6, 75, 115, 1167),
+  ('d9c1a3d8-172c-4c9f-8188-2d9ce7a53bf9'::uuid, 4.67, 97, 221, 243),
+  ('4c27a439-86ff-4d62-9263-2e766ca3c848'::uuid, 4.44, 260, 406, 485),
+  ('6c027df6-274d-44e2-9b43-fb580d738756'::uuid, 4.44, 196, 263, 1659),
+  ('d7665b14-0cca-458a-bd35-94e7aa5dc48f'::uuid, 4.88, 145, 268, 2294),
+  ('eaf1c674-7440-4b31-a730-3bac63afcd67'::uuid, 4.97, 63, 135, 746),
+  ('6440560d-e728-4a57-846d-274d5df9de11'::uuid, 4.58, 131, 143, 761),
+  ('30b96d13-d742-4d87-a8c2-8b57d556fd4d'::uuid, 4.66, 84, 246, 2289),
+  ('510722d6-14c0-4a53-be41-04f809905d8f'::uuid, 4.75, 201, 263, 641),
+  ('a126a1a2-e8e0-40e6-8709-31a593bd54c4'::uuid, 4.9, 37, 140, 2002),
+  ('04a03d6c-390d-412f-9b8b-e1b0fc84184c'::uuid, 4.43, 220, 355, 861),
+  ('6d90ed63-a3f1-4ad7-b7df-11bbefdd808d'::uuid, 4.85, 103, 138, 84),
+  ('bc5d2e20-ff73-4cd3-a8a9-394d8b797600'::uuid, 4.51, 120, 300, 1447),
+  ('89a16328-c475-4c8f-9ed4-984459932f65'::uuid, 4.51, 240, 313, 2152),
+  ('3d53da8f-5814-4897-8d69-cdbe8187429a'::uuid, 4.87, 152, 252, 2122),
+  ('89df9695-6006-4ccd-883a-83660f5144dd'::uuid, 4.56, 99, 239, 2366),
+  ('3306e833-91f6-43a3-95e2-cd2c087c46d6'::uuid, 4.8, 78, 95, 1656),
+  ('3324e783-baf5-43f1-bab8-4de6d46700f4'::uuid, 4.78, 147, 199, 2334),
+  ('72b1d28e-1dab-4ce2-917d-655bcde14e1a'::uuid, 4.71, 238, 361, 2195),
+  ('9ee75154-bc6c-4804-8b83-35eb90542227'::uuid, 4.85, 87, 183, 82),
+  ('433c2e40-5e69-4a36-96ca-b2ad28555751'::uuid, 4.78, 222, 343, 123),
+  ('40f848b1-1350-4629-8a6d-cb12028a92a5'::uuid, 4.95, 230, 254, 1358),
+  ('2212694b-5386-4035-a407-56bd97c88898'::uuid, 4.48, 179, 206, 949),
+  ('56a6fe01-d0e1-4082-acbe-cff62e37a1ee'::uuid, 4.58, 40, 98, 2374),
+  ('04a74629-0705-47e5-9a10-aca554f5f1eb'::uuid, 4.68, 147, 185, 2378),
+  ('022988b6-9151-4b81-b793-4b6fcf8cf948'::uuid, 4.4, 112, 171, 2397),
+  ('5ecf1516-e771-422b-a212-460b401d2ace'::uuid, 4.44, 105, 146, 603),
+  ('fdca69b1-6cf6-4837-9d55-8dc3b2d31058'::uuid, 4.68, 173, 189, 2341),
+  ('405c4cd2-0edd-4f15-8e5c-b5257cd00bfe'::uuid, 4.46, 75, 127, 1059),
+  ('e98639c7-d4ca-48a6-a6ee-63cfb4d6cdee'::uuid, 4.87, 171, 273, 498),
+  ('04668b65-f1f1-4c55-8331-2629af38bf28'::uuid, 4.46, 115, 180, 132),
+  ('71bfbbbc-8ffa-40d6-9c39-7105ffe3e1e5'::uuid, 4.99, 39, 186, 1124),
+  ('50ce16fb-2799-4d43-ae2d-a5967f81f013'::uuid, 4.88, 56, 170, 1064),
+  ('e34112bf-6af0-4c47-8603-c942f221b1d4'::uuid, 4.42, 218, 273, 1773),
+  ('89dbd0a8-7a51-4002-bbb7-ad99a708f5cf'::uuid, 4.89, 224, 310, 1757),
+  ('0324286d-e54f-45e7-899c-a903fe574d0d'::uuid, 4.51, 153, 236, 2368),
+  ('a9253c5b-225d-460c-99a5-00f50503d68e'::uuid, 4.71, 66, 111, 101),
+  ('45a9c520-9302-4711-8105-a1c34a03d3d5'::uuid, 4.76, 221, 260, 1246),
+  ('004d8d8b-bde9-4d79-b8b0-043cebeb3b19'::uuid, 4.93, 46, 63, 1060),
+  ('e8db3107-9731-426a-95c8-b7b209fda5df'::uuid, 4.42, 185, 273, 2120),
+  ('e93239c1-2cbc-4c1c-8806-9ce82065a391'::uuid, 4.75, 150, 181, 755),
+  ('384f9f55-6774-47b8-bda5-60b2e5de04d3'::uuid, 4.82, 244, 295, 140),
+  ('91a90c87-f01b-4b22-b9bd-810c3d9d4a8e'::uuid, 4.51, 172, 239, 496),
+  ('cf7a1244-29c8-47e2-897c-47404773c041'::uuid, 4.66, 76, 151, 984),
+  ('84dbb6b8-354c-4d2b-af7e-6ed591ccccdf'::uuid, 4.55, 35, 50, 878),
+  ('038dc3e5-a685-4217-a4ac-f8381db74622'::uuid, 4.64, 260, 340, 1728)
+) as v(id, rating_avg, rating_count, jobs_count, followers_count)
+where p.id = v.id;
+
+commit;
