@@ -1,0 +1,446 @@
+@import 'tailwindcss';
+
+/* Paleta inspirada en ridenow.tech: blanco, azul marino, azul vivo, rosa y celeste */
+@theme {
+  --font-sans: 'Plus Jakarta Sans Variable', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+
+  --color-navy: #081b3a;
+  --color-navy-2: #11295a;
+  --color-brand: #025ffb;
+  --color-brand-dark: #004ad0;
+  --color-rosa: #fd69cf;
+  --color-ice: #d1e2ff;
+  --color-mist: #f3f6fc;
+  --color-line: #e3e9f3;
+  --color-muted: #5b6b86;
+  --color-star: #ffb400;
+  --color-ok: #10a760;
+  --color-danger: #e5484d;
+  --color-warn: #f59e0b;
+
+  --radius-card: 22px;
+  --shadow-card: 0 1px 2px rgb(8 27 58 / 0.05), 0 10px 28px -14px rgb(8 27 58 / 0.25);
+  --shadow-float: 0 0 20px rgb(0 0 0 / 0.18);
+}
+
+@layer base {
+  :root {
+    color-scheme: light;
+  }
+  html {
+    -webkit-tap-highlight-color: transparent;
+    text-size-adjust: 100%;
+  }
+  body {
+    background: #ffffff;
+    color: var(--color-navy);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+  }
+  input,
+  textarea,
+  select,
+  button {
+    font: inherit;
+  }
+  ::selection {
+    background: var(--color-ice);
+  }
+}
+
+/* ---------------------------------------------------------------------
+   Botón "elegante" (Uiverse · iZOXVL) — misma forma y animación,
+   colores adaptados a la paleta. En móvil el brillo aparece al pulsar.
+   --------------------------------------------------------------------- */
+.boton-elegante {
+  --be-bg: var(--color-navy);
+  --be-border: #1d3561;
+  --be-bg-hover: #13294f;
+  --be-border-hover: #5b75a8;
+  --be-glow: rgba(255, 255, 255, 0.25);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.55rem;
+  padding: 15px 30px;
+  border: 2px solid var(--be-border);
+  background-color: var(--be-bg);
+  color: #ffffff;
+  font-size: 1.05rem;
+  line-height: 1.2;
+  cursor: pointer;
+  border-radius: 30px;
+  transition: all 0.4s ease;
+  outline: none;
+  position: relative;
+  overflow: hidden;
+  font-weight: bold;
+  text-decoration: none;
+  white-space: nowrap;
+  user-select: none;
+}
+.boton-elegante::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: radial-gradient(circle, var(--be-glow) 0%, rgba(255, 255, 255, 0) 70%);
+  transform: scale(0);
+  transition: transform 0.5s ease;
+  pointer-events: none;
+}
+@media (hover: hover) {
+  .boton-elegante:hover::after {
+    transform: scale(4);
+  }
+  .boton-elegante:hover {
+    border-color: var(--be-border-hover);
+    background: var(--be-bg-hover);
+  }
+}
+.boton-elegante:active::after {
+  transform: scale(4);
+  transition-duration: 0.25s;
+}
+.boton-elegante:active {
+  border-color: var(--be-border-hover);
+  background: var(--be-bg-hover);
+}
+.boton-elegante:focus-visible {
+  box-shadow: 0 0 0 3px rgb(2 95 251 / 0.35);
+}
+.boton-elegante:disabled,
+.boton-elegante[aria-disabled='true'] {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.boton-elegante--blue {
+  --be-bg: var(--color-brand);
+  --be-border: #2a78ff;
+  --be-bg-hover: #0b55e0;
+  --be-border-hover: #9cc0ff;
+}
+.boton-elegante--rosa {
+  --be-bg: var(--color-rosa);
+  --be-border: #ff8fdb;
+  --be-bg-hover: #f052bf;
+  --be-border-hover: #ffd0f0;
+  color: var(--color-navy);
+}
+.boton-elegante--light {
+  --be-bg: #ffffff;
+  --be-border: var(--color-line);
+  --be-bg-hover: #f5f8fd;
+  --be-border-hover: #b9c7de;
+  --be-glow: rgba(2, 95, 251, 0.16);
+  color: var(--color-navy);
+}
+.boton-elegante--danger {
+  --be-bg: #ffffff;
+  --be-border: #f3c3c5;
+  --be-bg-hover: #fff5f5;
+  --be-border-hover: var(--color-danger);
+  --be-glow: rgba(229, 72, 77, 0.14);
+  color: var(--color-danger);
+}
+.boton-elegante--sm {
+  padding: 10px 20px;
+  font-size: 0.92rem;
+  border-radius: 24px;
+}
+.boton-elegante--block {
+  display: flex;
+  width: 100%;
+}
+
+/* ---------------------------------------------------------------------
+   Botón campana (Uiverse · vinodjangid07) para notificaciones
+   --------------------------------------------------------------------- */
+.bell-button {
+  width: 50px;
+  height: 50px;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: var(--color-navy);
+  border-radius: 50%;
+  cursor: pointer;
+  transition-duration: 0.3s;
+  box-shadow: 2px 2px 10px rgba(0, 0, 0, 0.13);
+  border: none;
+  flex-shrink: 0;
+}
+.bell-button .bell {
+  width: 18px;
+}
+.bell-button .bell path {
+  fill: white;
+}
+.bell-button:hover {
+  background-color: #1a3564;
+}
+.bell-button:hover .bell,
+.bell-button.is-ringing .bell {
+  animation: bellRing 0.9s both;
+}
+.bell-button--light {
+  background-color: rgb(255 255 255 / 0.14);
+  box-shadow: none;
+  border: 1px solid rgb(255 255 255 / 0.22);
+}
+.bell-button--light:hover {
+  background-color: rgb(255 255 255 / 0.24);
+}
+@keyframes bellRing {
+  0%,
+  100% {
+    transform-origin: top;
+  }
+  15% {
+    transform: rotateZ(10deg);
+  }
+  30% {
+    transform: rotateZ(-10deg);
+  }
+  45% {
+    transform: rotateZ(5deg);
+  }
+  60% {
+    transform: rotateZ(-5deg);
+  }
+  75% {
+    transform: rotateZ(2deg);
+  }
+}
+.bell-button:active {
+  transform: scale(0.8);
+}
+
+/* ---------------------------------------------------------------------
+   Utilidades propias
+   --------------------------------------------------------------------- */
+@utility no-scrollbar {
+  scrollbar-width: none;
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}
+@utility pb-safe {
+  padding-bottom: max(env(safe-area-inset-bottom), 0px);
+}
+@utility pt-safe {
+  padding-top: max(env(safe-area-inset-top), 0px);
+}
+@utility slant-bottom {
+  clip-path: polygon(0 0, 100% 0, 100% calc(100% - 28px), 0 100%);
+}
+@utility text-balance {
+  text-wrap: balance;
+}
+
+.field {
+  width: 100%;
+  border-radius: 16px;
+  border: 1.5px solid var(--color-line);
+  background: #ffffff;
+  padding: 13px 15px;
+  font-size: 16px;
+  color: var(--color-navy);
+  outline: none;
+  transition:
+    border-color 0.2s,
+    box-shadow 0.2s;
+}
+.field::placeholder {
+  color: #93a1b8;
+}
+.field:focus {
+  border-color: var(--color-brand);
+  box-shadow: 0 0 0 4px rgb(2 95 251 / 0.12);
+}
+.label {
+  display: block;
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: var(--color-muted);
+  margin-bottom: 6px;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border-radius: 999px;
+  border: 1.5px solid var(--color-line);
+  background: #fff;
+  padding: 8px 14px;
+  font-size: 0.88rem;
+  font-weight: 600;
+  white-space: nowrap;
+  transition: all 0.2s;
+}
+.chip[aria-pressed='true'] {
+  background: var(--color-navy);
+  border-color: var(--color-navy);
+  color: #fff;
+}
+
+.skeleton {
+  background: linear-gradient(90deg, #eef2f8 25%, #f7f9fc 37%, #eef2f8 63%);
+  background-size: 400% 100%;
+  animation: skeleton 1.3s ease infinite;
+}
+@keyframes skeleton {
+  0% {
+    background-position: 100% 50%;
+  }
+  100% {
+    background-position: 0 50%;
+  }
+}
+
+@keyframes fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.animate-fade-up {
+  animation: fade-up 0.45s ease both;
+}
+@keyframes pop {
+  0% {
+    transform: scale(0.6);
+    opacity: 0;
+  }
+  70% {
+    transform: scale(1.08);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+.animate-pop {
+  animation: pop 0.5s cubic-bezier(0.2, 0.9, 0.3, 1.2) both;
+}
+@keyframes sheet-up {
+  from {
+    transform: translateY(100%);
+  }
+  to {
+    transform: none;
+  }
+}
+.animate-sheet {
+  animation: sheet-up 0.32s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+@keyframes pulse-ring {
+  0% {
+    transform: scale(0.6);
+    opacity: 0.7;
+  }
+  100% {
+    transform: scale(2.4);
+    opacity: 0;
+  }
+}
+
+/* Tarjeta de crédito animada */
+.card-3d {
+  perspective: 1200px;
+}
+.card-3d__inner {
+  position: relative;
+  transition: transform 0.7s cubic-bezier(0.3, 0.7, 0.2, 1);
+  transform-style: preserve-3d;
+}
+.card-3d__inner.is-flipped {
+  transform: rotateY(180deg);
+}
+.card-3d__face {
+  position: absolute;
+  inset: 0;
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+  border-radius: 20px;
+  overflow: hidden;
+}
+.card-3d__back {
+  transform: rotateY(180deg);
+}
+
+/* Mapa (Leaflet) */
+.leaflet-container {
+  font-family: var(--font-sans);
+  background: #eef3f8;
+}
+.leaflet-control-attribution {
+  font-size: 9px !important;
+}
+.map-pin {
+  background: transparent;
+  border: 0;
+}
+.map-pin__wrap {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  transition: transform 0.2s;
+}
+.map-pin__wrap.is-active {
+  transform: scale(1.18);
+  z-index: 1000;
+}
+.map-pin__img {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  border: 3px solid #fff;
+  box-shadow: 0 0 0 2px var(--color-brand), 0 6px 14px rgb(8 27 58 / 0.35);
+  object-fit: cover;
+  background: var(--color-ice);
+}
+.map-pin__wrap.is-active .map-pin__img {
+  box-shadow: 0 0 0 3px var(--color-rosa), 0 8px 18px rgb(8 27 58 / 0.4);
+}
+.map-pin__tag {
+  margin-top: -6px;
+  background: var(--color-navy);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 800;
+  padding: 2px 6px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+.me-dot {
+  position: relative;
+  width: 18px;
+  height: 18px;
+}
+.me-dot::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: var(--color-brand);
+  animation: pulse-ring 1.8s ease-out infinite;
+}
+.me-dot::after {
+  content: '';
+  position: absolute;
+  inset: 2px;
+  border-radius: 50%;
+  background: var(--color-brand);
+  border: 3px solid #fff;
+  box-shadow: 0 2px 6px rgb(0 0 0 / 0.3);
+}

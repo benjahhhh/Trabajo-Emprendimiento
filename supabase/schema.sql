@@ -452,14 +452,27 @@ returns table (
 language sql stable
 set search_path = public
 as $$
+  -- Cada palabra se reduce a su raíz ("cortar" → "cort", "mecánicos" → "mecani").
+  -- 1º se detecta la categoría que busca el usuario (nombre + palabras clave).
+  -- Si ninguna encaja, se buscan profesionales por nombre, frase, servicios o comuna.
   with q as (
     select coalesce(array(
-      select case when length(w) > 4 and right(w, 1) = 's' then left(w, length(w) - 1) else w end
+      select distinct case when length(w) <= 4 then w else left(w, greatest(4, length(w) - 2)) end
       from unnest(regexp_split_to_array(public.norm(coalesce(p_query, '')), '[^a-z0-9]+')) as w
-      where length(w) >= 3
-        and w not in ('para', 'que', 'una', 'uno', 'los', 'las', 'del', 'con', 'por', 'domicilio',
-                      'servicio', 'servicios', 'casa', 'necesito', 'busco', 'alguien', 'quien', 'mas', 'cerca')
+      where length(w) >= 2
+        and w not in ('el', 'la', 'lo', 'de', 'en', 'un', 'me', 'mi', 'tu', 'se', 'al', 'es', 'te', 'le', 'ya', 'si',
+                      'no', 'su', 'yo', 'mis', 'para', 'que', 'una', 'uno', 'los', 'las', 'del', 'con', 'por', 'domicilio',
+                      'servicio', 'servicios', 'casa', 'necesito', 'busco', 'alguien', 'quien', 'mas', 'cerca', 'hoy',
+                      'urgente', 'barato', 'bueno', 'buena', 'mejor', 'quiero', 'favor', 'ahora', 'aqui', 'algun', 'alguna')
     ), '{}') as words
+  ),
+  cat_scores as (
+    select c.id, (select count(*) from q, unnest(q.words) as w
+                  where position(w in public.norm(c.name || ' ' || c.keywords)) > 0) as score
+    from public.categories c
+  ),
+  cat_best as (
+    select coalesce(max(score), 0) as top from cat_scores
   ),
   base as (
     select p.*, c.name as category_name,
@@ -467,7 +480,7 @@ as $$
         power(sin(radians(p.lat - p_lat) / 2), 2) +
         cos(radians(p_lat)) * cos(radians(p.lat)) * power(sin(radians(p.lng - p_lng) / 2), 2)
       ))) as dist,
-      public.norm(p.display_name || ' ' || p.headline || ' ' || p.comuna || ' ' || c.name || ' ' || c.keywords || ' ' ||
+      public.norm(p.display_name || ' ' || p.headline || ' ' || p.bio || ' ' || p.comuna || ' ' ||
         coalesce((select string_agg(s.title || ' ' || s.description, ' ') from public.services s
                    where s.provider_id = p.id and s.active), '')) as haystack
     from public.providers p
@@ -475,13 +488,22 @@ as $$
     where (p_category is null or p_category = '' or p.category_id = p_category)
       and (not coalesce(p_available_only, false) or p.available)
       and (p_min_rating is null or p.rating_avg >= p_min_rating)
+  ),
+  scored as (
+    select b.*, (select count(*) from q, unnest(q.words) as w where position(w in b.haystack) > 0) as hits
+    from base b
+    where (p_max_km is null or b.dist <= p_max_km)
+  ),
+  best as (
+    select coalesce(max(hits), 0) as top from scored
   )
   select b.id, b.display_name, b.headline, b.avatar_url, b.cover_url, b.category_id, b.category_name, b.comuna,
          b.lat, b.lng, b.rating_avg, b.rating_count, b.jobs_count, b.price_from, b.verified, b.available,
          b.is_demo, b.service_radius_km, b.response_minutes, round(b.dist::numeric, 2)::double precision
-  from base b, q
-  where (p_max_km is null or b.dist <= p_max_km)
-    and not exists (select 1 from unnest(q.words) as w where position(w in b.haystack) = 0)
+  from scored b, best, q, cat_best
+  where cardinality(q.words) = 0
+     or (cat_best.top > 0 and b.category_id in (select cs.id from cat_scores cs where cs.score = cat_best.top))
+     or (cat_best.top = 0 and best.top > 0 and b.hits = best.top)
   order by
     case when p_sort = 'distance' then b.dist end asc,
     case when p_sort = 'rating' then b.rating_avg end desc,
@@ -884,11 +906,11 @@ declare
   v_p public.providers;
   v_last text;
   v_replies text[] := array[
-    '¡Hola! Sí, tengo disponibilidad esta semana. ¿Qué día te acomoda?',
-    'Perfecto, lo reviso y te confirmo en unos minutos.',
-    'Claro que sí. Llevo todas las herramientas, no necesitas tener nada.',
-    'Genial. Puedes reservar directamente desde mi perfil y el pago queda protegido por la app.',
-    '¡Gracias por escribir! Normalmente llego en menos de 1 hora dentro de mi zona.',
+    '¡Hola! Sí, sin problema. ¿Te acomoda el horario que elegiste?',
+    'Perfecto, lo tengo anotado. Llevo todo lo necesario para el trabajo.',
+    'Claro que sí. Cualquier detalle extra me lo cuentas por aquí.',
+    'Genial, gracias por avisar. Te escribo cuando vaya en camino 🚗',
+    'Dale. Si prefieres otro día, puedes reservar otra hora desde mi perfil.',
     'Sin problema, el precio incluye el traslado a tu domicilio.'
   ];
 begin
