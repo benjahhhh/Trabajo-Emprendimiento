@@ -100,7 +100,7 @@ export default function Landing() {
               <span className="size-2 rounded-full bg-brand" /> Ya disponible en Santiago
             </span>
             <h1 className="mt-5 text-[3.1rem] font-extrabold leading-[0.98] tracking-[-0.055em] sm:text-[4.6rem] lg:text-[5.6rem]">
-              Servicios a domicilio, <span className="text-brand">cerca</span> de ti
+              Servicios <span className="text-brand">a domicilio</span>, cerca de ti
             </h1>
             <p className="mt-5 max-w-[34ch] text-lg text-muted sm:text-xl">
               Barberos, mecánicos, jardineros, gásfiter y más. Encuentra al más cercano o al mejor valorado, reserva y paga seguro en un minuto.

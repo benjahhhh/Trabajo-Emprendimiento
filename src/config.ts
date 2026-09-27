@@ -1,5 +1,5 @@
 // Ajustes generales de la app. Para cambiar el nombre, la ciudad o la moneda, edita este archivo.
-export const APP_NAME = 'Cerca'
+export const APP_NAME = 'Kasa'
 export const APP_TAGLINE = 'Servicios a domicilio, cerca de ti'
 export const LOCALE = 'es-CL'
 export const CURRENCY = 'CLP'
@@ -22,8 +22,8 @@ export const SUPABASE_KEY: string =
 
 // Cuentas de demostración para presentar la app sin registrarse
 export const DEMO_ACCOUNTS = {
-  client: { email: 'cliente.demo@example.com', password: 'cerca-demo-2026', label: 'Cliente demo' },
-  pro: { email: 'profesional.demo@example.com', password: 'cerca-demo-2026', label: 'Profesional demo' },
+  client: { email: 'cliente.demo@example.com', password: 'kasa-demo-2026', label: 'Cliente demo' },
+  pro: { email: 'profesional.demo@example.com', password: 'kasa-demo-2026', label: 'Profesional demo' },
 }
 
 // Tarjeta de prueba (el pago es simulado: cualquier número válido de 16 dígitos sirve)

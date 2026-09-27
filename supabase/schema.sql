@@ -1,5 +1,5 @@
 -- =====================================================================
--- CERCA · Esquema de base de datos para Supabase (Postgres)
+-- KASA · Esquema de base de datos para Supabase (Postgres)
 -- ---------------------------------------------------------------------
 -- Cómo usarlo: Supabase → SQL Editor → New query → pega este archivo → Run
 -- Después ejecuta supabase/seed.sql (datos de ejemplo de Santiago).

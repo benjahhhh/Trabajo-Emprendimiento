@@ -1,4 +1,5 @@
 import { CalendarDays, Compass, House, MapPin, MessageCircle, Search, Star, UserRound } from 'lucide-react'
+import { APP_NAME } from '../config'
 import { cn } from '../lib/cn'
 import { CategoryBadge } from './CategoryIcon'
 import { LogoMark } from './Logo'
@@ -21,7 +22,7 @@ export function PhoneMockup({ className }: { className?: string }) {
           <div className="absolute -right-5 top-[94px] h-3 w-20 -rotate-[8deg] bg-brand" />
           <div className="relative flex items-center gap-1.5">
             <LogoMark className="size-5" />
-            <span className="text-sm font-extrabold tracking-tight">Cerca</span>
+            <span className="text-sm font-extrabold tracking-tight">{APP_NAME}</span>
           </div>
           <p className="relative mt-3 text-[10px] text-white/70">Hola, Martina 👋</p>
           <p className="relative max-w-[11ch] text-[17px] font-extrabold leading-tight tracking-tight">¿Qué servicio necesitas hoy?</p>

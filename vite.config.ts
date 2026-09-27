@@ -13,8 +13,8 @@ export default defineConfig({
       registerType: 'autoUpdate',
       includeAssets: ['favicon.svg', 'apple-touch-icon.png'],
       manifest: {
-        name: 'Cerca · Servicios a domicilio',
-        short_name: 'Cerca',
+        name: 'Kasa · Servicios a domicilio',
+        short_name: 'Kasa',
         description: 'Encuentra al profesional más cercano o mejor valorado: barberos, mecánicos, jardineros y más.',
         lang: 'es-CL',
         start_url: '/app',

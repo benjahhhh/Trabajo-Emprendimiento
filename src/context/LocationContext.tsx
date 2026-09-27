@@ -12,7 +12,7 @@ type LocationState = {
   setManual: (coords: LatLng, label: string) => void
 }
 
-const KEY = 'cerca.location'
+const KEY = 'kasa.location'
 const LocationContext = createContext<LocationState | null>(null)
 
 function readSaved(): { coords: LatLng; label: string } | null {

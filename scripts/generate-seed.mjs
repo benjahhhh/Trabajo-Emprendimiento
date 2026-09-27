@@ -211,7 +211,7 @@ const out = []
 const line = (s = '') => out.push(s)
 
 line('-- =====================================================================')
-line('-- CERCA · Datos de ejemplo (Santiago de Chile, precios en CLP)')
+line('-- KASA · Datos de ejemplo (Santiago de Chile, precios en CLP)')
 line('-- Generado por scripts/generate-seed.mjs. Ejecutar DESPUÉS de schema.sql.')
 line('-- Re-ejecutable: actualiza los datos demo sin tocar a los usuarios reales.')
 line('-- =====================================================================')

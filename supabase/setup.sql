@@ -1,7 +1,7 @@
 -- Archivo todo-en-uno: schema.sql + seed.sql (generado por scripts/generate-seed.mjs)
 
 -- =====================================================================
--- CERCA · Esquema de base de datos para Supabase (Postgres)
+-- KASA · Esquema de base de datos para Supabase (Postgres)
 -- ---------------------------------------------------------------------
 -- Cómo usarlo: Supabase → SQL Editor → New query → pega este archivo → Run
 -- Después ejecuta supabase/seed.sql (datos de ejemplo de Santiago).
@@ -1314,7 +1314,7 @@ end $$;
 
 
 -- =====================================================================
--- CERCA · Datos de ejemplo (Santiago de Chile, precios en CLP)
+-- KASA · Datos de ejemplo (Santiago de Chile, precios en CLP)
 -- Generado por scripts/generate-seed.mjs. Ejecutar DESPUÉS de schema.sql.
 -- Re-ejecutable: actualiza los datos demo sin tocar a los usuarios reales.
 -- =====================================================================

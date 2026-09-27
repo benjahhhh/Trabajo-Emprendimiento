@@ -1,6 +1,6 @@
 -- =====================================================================
--- CERCA · Cuentas demo para la presentación
--- 1) Crea en la app (Registro) estas dos cuentas con contraseña cerca-demo-2026:
+-- KASA · Cuentas demo para la presentación
+-- 1) Crea en la app (Registro) estas dos cuentas con contraseña kasa-demo-2026:
 --      cliente.demo@example.com       (cliente, además admin del panel de negocio)
 --      profesional.demo@example.com   (profesional real que recibe solicitudes)
 -- 2) Ejecuta este archivo en Supabase → SQL Editor.

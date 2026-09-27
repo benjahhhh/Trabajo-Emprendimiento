@@ -7,7 +7,7 @@ export function initInstallPrompt() {
   window.addEventListener('beforeinstallprompt', (e) => {
     e.preventDefault()
     deferred = e as BeforeInstallPromptEvent
-    window.dispatchEvent(new Event('cerca:installable'))
+    window.dispatchEvent(new Event('kasa:installable'))
   })
   window.addEventListener('appinstalled', () => {
     deferred = null

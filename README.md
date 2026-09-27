@@ -1,10 +1,9 @@
-# Cerca · Servicios a domicilio cerca de ti
+# Kasa · Servicios a domicilio cerca de ti
 
 Web app (PWA) que conecta a personas que necesitan un servicio con el profesional **más cercano** o **mejor valorado**: jardineros, mecánicos, barberos a domicilio, gásfiter, electricistas y 16 categorías en total. Proyecto de emprendimiento 2026 · Santiago de Chile · precios en CLP.
 
-**App publicada:** https://cerca-app-jet.vercel.app · la web app está en `/app`
+**App publicada:** https://kasa-chile.vercel.app · la web app está en `/app`
 
-> "Cerca" es un nombre provisional. Se cambia en `src/config.ts`, `index.html` y `vite.config.ts` (manifest).
 
 ## Qué hace
 
@@ -33,8 +32,8 @@ En la pantalla de **Entrar** hay dos botones de acceso rápido:
 
 | Cuenta | Correo | Contraseña |
 |---|---|---|
-| Cliente (y admin del panel de negocio) | `cliente.demo@example.com` | `cerca-demo-2026` |
-| Profesional (Seba Barber, recibe solicitudes reales) | `profesional.demo@example.com` | `cerca-demo-2026` |
+| Cliente (y admin del panel de negocio) | `cliente.demo@example.com` | `kasa-demo-2026` |
+| Profesional (Seba Barber, recibe solicitudes reales) | `profesional.demo@example.com` | `kasa-demo-2026` |
 
 Los 48 profesionales de ejemplo **aceptan solos** las reservas a los pocos segundos y contestan en el chat, así la demo funciona con un solo teléfono.
 
