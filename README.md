@@ -1,6 +1,8 @@
 # Cerca · Servicios a domicilio cerca de ti
 
-Web app (PWA) que conecta a personas que necesitan un servicio con el profesional **más cercano** o **mejor valorado**: jardineros, mecánicos, barberos a domicilio, gásfiter, electricistas y 16 categorías más. Proyecto de emprendimiento 2026 · Santiago de Chile · precios en CLP.
+Web app (PWA) que conecta a personas que necesitan un servicio con el profesional **más cercano** o **mejor valorado**: jardineros, mecánicos, barberos a domicilio, gásfiter, electricistas y 16 categorías en total. Proyecto de emprendimiento 2026 · Santiago de Chile · precios en CLP.
+
+**App publicada:** https://cerca-app-jet.vercel.app · la web app está en `/app`
 
 > "Cerca" es un nombre provisional. Se cambia en `src/config.ts`, `index.html` y `vite.config.ts` (manifest).
 
@@ -49,7 +51,7 @@ Si presentáis fuera de Santiago: *Modelo de negocio → Traer profesionales dem
 
 ## Tecnología
 
-- **Frontend:** React 19 + TypeScript + Vite + Tailwind CSS 4, React Router, Leaflet (mapas OpenStreetMap/CARTO), PWA instalable (vite-plugin-pwa).
+- **Frontend:** React 19 + TypeScript + Vite + Tailwind CSS 4, React Router, Leaflet (mapas de Esri con datos de OpenStreetMap), PWA instalable (vite-plugin-pwa).
 - **Backend:** Supabase: Postgres con RLS en todas las tablas, Auth, Storage (fotos), Realtime (chat, reservas y notificaciones en vivo) y funciones SQL para reservas, pagos, comisión y búsqueda por cercanía (Haversine).
 - **Hosting:** Vercel.
 - **Diseño:** paleta de ridenow.tech (blanco, azul marino `#081B3A`, azul `#025FFB`, rosa `#FD69CF`, celeste `#D1E2FF`), botones de Uiverse (*botón elegante* de iZOXVL y *campana* de vinodjangid07).
@@ -115,4 +117,4 @@ npm run build    # comprueba tipos y genera dist/
 ## Créditos
 - Botones: [Uiverse.io](https://uiverse.io) (iZOXVL, vinodjangid07). Icono de campana: Font Awesome Free (CC BY 4.0).
 - Fotos de ejemplo: [Unsplash](https://unsplash.com). Retratos: [randomuser.me](https://randomuser.me).
-- Mapas: © OpenStreetMap, © CARTO. Iconos: Lucide.
+- Mapas: © Esri, HERE, Garmin, © colaboradores de OpenStreetMap. Iconos: Lucide.

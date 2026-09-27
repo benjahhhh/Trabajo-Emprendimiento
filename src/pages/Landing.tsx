@@ -315,7 +315,7 @@ export default function Landing() {
             <span className="flex items-center gap-2">
               <LogoMark className="size-5" /> {APP_NAME} · Proyecto de emprendimiento 2026 · Santiago de Chile
             </span>
-            <span>Fotos: Unsplash · Mapas: © OpenStreetMap, © CARTO</span>
+            <span>Fotos: Unsplash · Mapas: © Esri, © OpenStreetMap</span>
           </div>
         </div>
       </footer>

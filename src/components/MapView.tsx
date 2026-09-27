@@ -77,11 +77,17 @@ export function MapView({
       attributionControl
       className={cn('size-full', className)}
     >
+      {/* Mapa base gris claro de Esri (sin clave de API) + capa de etiquetas */}
       <TileLayer
-        url="https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png"
-        subdomains="abcd"
-        maxZoom={20}
-        attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>'
+        url="https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}"
+        maxNativeZoom={16}
+        maxZoom={19}
+        attribution="Mapa &copy; Esri, HERE, Garmin &middot; &copy; colaboradores de OpenStreetMap"
+      />
+      <TileLayer
+        url="https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Reference/MapServer/tile/{z}/{y}/{x}"
+        maxNativeZoom={16}
+        maxZoom={19}
       />
       <Controller center={center} zoom={zoom} fit={fit} />
       {radius && (

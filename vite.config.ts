@@ -40,7 +40,7 @@ export default defineConfig({
         maximumFileSizeToCacheInBytes: 4 * 1024 * 1024,
         runtimeCaching: [
           {
-            urlPattern: /^https:\/\/[abcd]\.basemaps\.cartocdn\.com\/.*/,
+            urlPattern: /^https:\/\/server\.arcgisonline\.com\/.*/,
             handler: 'CacheFirst',
             options: {
               cacheName: 'map-tiles',
