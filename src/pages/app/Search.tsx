@@ -174,7 +174,7 @@ export default function Search() {
             <EmptyState
               icon={<SearchX className="size-8" />}
               title="Sin resultados"
-              body="Prueba con otra palabra (por ejemplo «pasto», «aceite» o «uñas») o quita algún filtro."
+              body="Prueba con otra palabra (por ejemplo «pasto», «aceite» o «enchufe») o quita algún filtro."
               action={
                 <ElegantButton size="sm" onClick={() => setParams({}, { replace: true })}>
                   Limpiar búsqueda

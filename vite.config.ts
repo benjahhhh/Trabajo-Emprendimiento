@@ -15,7 +15,7 @@ export default defineConfig({
       manifest: {
         name: 'Kasa · Servicios a domicilio',
         short_name: 'Kasa',
-        description: 'Encuentra al profesional más cercano o mejor valorado: barberos, mecánicos, jardineros y más.',
+        description: 'Encuentra al profesional más cercano o mejor valorado: jardineros, gásfiter, electricistas y más.',
         lang: 'es-CL',
         start_url: '/app',
         scope: '/',

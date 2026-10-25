@@ -1,8 +1,6 @@
 // Portada por defecto para profesionales nuevos (fotos libres de Unsplash)
 const U = (id: string) => `https://images.unsplash.com/${id}`
 export const CATEGORY_COVERS: Record<string, string> = {
-  barberia: U('photo-1647140655214-e4a2d914971f'),
-  belleza: U('photo-1634449571010-02389ed0f9b0'),
   masajes: U('photo-1519823551278-64ac92734fb1'),
   entrenador: U('photo-1534258936925-c58bed479fcb'),
   mascotas: U('photo-1648304887391-a6c2cf2228e4'),

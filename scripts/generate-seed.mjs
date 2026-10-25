@@ -41,8 +41,6 @@ const PALETTE = ['#025FFB', '#FD69CF', '#081B3A', '#D1E2FF']
 const CATS = [
   ['jardineria', 'Jardinería', 'Sprout', 'jardin jardinero jardineria pasto cesped corte poda arbol arboles riego plantas maleza paisajismo'],
   ['mecanica', 'Mecánica', 'Wrench', 'mecanico mecanica auto autos carro coche aceite frenos bateria neumatico neumaticos scanner moto revision taller'],
-  ['barberia', 'Barbería', 'Scissors', 'barbero barberia pelo corte barba fade degradado peluquero afeitado'],
-  ['belleza', 'Belleza', 'Sparkles', 'manicure pedicure unas uñas maquillaje peluqueria peluquera peinado cejas pestañas estetica alisado tintura'],
   ['aseo', 'Aseo', 'SprayCan', 'aseo limpieza limpiar hogar departamento depto oficina ventanas alfombras sofa tapiz colchon'],
   ['gasfiteria', 'Gasfitería', 'Droplets', 'gasfiter gasfiteria plomero fontanero cañeria agua fuga calefont baño llave destape wc lavamanos'],
   ['electricidad', 'Electricidad', 'Zap', 'electricista electricidad enchufe luz cableado tablero corto circuito lampara instalacion'],
@@ -88,12 +86,6 @@ const PROS = [
   ['mecanica', 'Mecánico a Domicilio Carlos', 'Carlos Soto', 'm', 'Ñuñoa', 'Cambio de aceite y frenos en tu casa', 'Mecánico automotriz titulado. Voy a tu casa o trabajo con todo el equipo. Uso repuestos originales o alternativos, tú eliges.'],
   ['mecanica', 'AutoFix Móvil', 'Diego Fuentes', 'm', 'Providencia', 'Diagnóstico con scanner y mantenciones', 'Scanner multimarca para detectar fallas en el momento. Mantenciones por kilometraje sin ir al taller.'],
   ['mecanica', 'Taller Móvil Rivas', 'Andrés Rivas', 'm', 'La Florida', 'Mecánica general y baterías', 'Cambio de baterías, alternadores y arranques. Si tu auto no parte, voy a buscarte.'],
-  ['barberia', 'Barber Nico', 'Nicolás Pérez', 'm', 'Santiago Centro', 'Barbero a domicilio · fades y barba', 'Barbero con 8 años de experiencia. Llevo sillón plegable, capa y todo desinfectado. Fades, tijera y barba con toalla caliente.'],
-  ['barberia', 'The Home Barber', 'Matías Silva', 'm', 'Vitacura', 'Cortes clásicos y modernos en tu casa', 'Ideal para oficinas y eventos. Cortes clásicos, texturizados y afeitado tradicional.'],
-  ['barberia', 'Kevin Cuts', 'Kevin Morales', 'm', 'San Miguel', 'Degradados y diseños · también niños', 'Especialista en degradados y diseños. Paciencia con los más pequeños.'],
-  ['belleza', 'Nails by Fran', 'Francisca Díaz', 'f', 'Providencia', 'Manicure y pedicure semipermanente', 'Manicurista certificada. Esmaltado semipermanente, kapping y nail art. Materiales esterilizados.'],
-  ['belleza', 'Glam en Casa', 'Valentina Torres', 'f', 'Las Condes', 'Maquillaje y peinados para eventos', 'Maquilladora profesional para matrimonios, graduaciones y sesiones de fotos. Voy donde te arregles.'],
-  ['belleza', 'Estética Javi', 'Javiera González', 'f', 'Ñuñoa', 'Pestañas, cejas y uñas a domicilio', 'Lifting de pestañas, perfilado de cejas y uñas. Atención cálida y puntual.'],
   ['aseo', 'Brillo Total', 'Marcela Herrera', 'f', 'Las Condes', 'Aseo profundo de casas y departamentos', 'Equipo de 2 personas con productos incluidos. Aseo profundo, post mudanza y post obra.'],
   ['aseo', 'Limpieza Rosa', 'Rosa Vargas', 'f', 'Estación Central', 'Aseo general por horas', 'Aseo general, planchado y orden. Referencias de clientes de hace años.'],
   ['aseo', 'Sofá Limpio', 'Jorge Castillo', 'm', 'Macul', 'Limpieza de sofás, alfombras y colchones', 'Lavado de tapiz con máquina de inyección-extracción. Secado rápido.'],
@@ -136,8 +128,6 @@ const PROS = [
 const SERVICES = {
   jardineria: [['Corte de pasto (hasta 100 m²)', 18000, 90, 'Corte, orillado y retiro de residuos.'], ['Poda de arbustos', 25000, 120, 'Poda y formación de arbustos y cercos.'], ['Limpieza de maleza', 22000, 120, 'Desmalezado y limpieza de platabandas.'], ['Mantención mensual de jardín', 60000, 240, '4 visitas al mes: corte, poda y riego.']],
   mecanica: [['Cambio de aceite y filtro a domicilio', 45000, 60, 'Incluye 4 litros de aceite sintético y filtro.'], ['Diagnóstico con scanner', 20000, 45, 'Lectura de fallas y borrado de códigos.'], ['Cambio de pastillas de freno', 40000, 90, 'Mano de obra por eje. Repuestos aparte.'], ['Cambio de batería', 15000, 30, 'Instalación y prueba del sistema de carga.']],
-  barberia: [['Corte a domicilio', 12000, 45, 'Corte con máquina y tijera, lavado incluido.'], ['Corte + barba', 17000, 60, 'Corte completo y perfilado de barba con toalla caliente.'], ['Perfilado de barba', 8000, 25, 'Perfilado, navaja y bálsamo.'], ['Corte niño', 10000, 30, 'Para menores de 12 años.']],
-  belleza: [['Manicure semipermanente', 15000, 60, 'Limado, cutícula y esmaltado semipermanente.'], ['Pedicure spa', 18000, 70, 'Exfoliación, hidratación y esmaltado.'], ['Peinado para evento', 25000, 60, 'Ondas, tomados o brushing.'], ['Maquillaje social', 30000, 60, 'Maquillaje de larga duración.'], ['Lifting de pestañas', 20000, 60, 'Incluye tinte.']],
   aseo: [['Aseo general (4 horas)', 35000, 240, 'Cocina, baños, dormitorios y living.'], ['Limpieza profunda de cocina', 30000, 180, 'Desengrase de campana, horno y muebles.'], ['Limpieza de sofá 3 cuerpos', 28000, 90, 'Lavado con inyección-extracción.'], ['Limpieza de alfombra', 25000, 90, 'Hasta 6 m².']],
   gasfiteria: [['Visita y diagnóstico', 15000, 45, 'Se descuenta si realizas el trabajo.'], ['Destape de cañería', 25000, 60, 'Lavaplatos, lavamanos o WC.'], ['Cambio de llave o monomando', 20000, 60, 'Mano de obra. Grifería aparte.'], ['Mantención de calefont', 30000, 90, 'Limpieza de quemadores y revisión de gases.']],
   electricidad: [['Visita técnica', 15000, 45, 'Diagnóstico de fallas eléctricas.'], ['Instalación de lámpara', 12000, 45, 'Colgante, plafón o aplique.'], ['Cambio de enchufe', 8000, 20, 'Por unidad, material aparte.'], ['Revisión de tablero', 25000, 60, 'Automáticos, diferencial y conexiones.']],
@@ -156,8 +146,6 @@ const SERVICES = {
 const CAPTIONS = {
   jardineria: ['Así quedó este jardín en La Reina después del corte 🌿', 'Poda de cerco terminada, listo para la primavera', 'Antes y después: limpieza de maleza completa', 'Mantención mensual al día ✂️🌱', 'Jardín de bajo consumo de agua, ideal para Santiago'],
   mecanica: ['Cambio de aceite hecho en el estacionamiento del cliente 🔧', 'Diagnóstico con scanner: falla de sensor resuelta', 'Frenos nuevos y probados antes de entregar', 'Otra batería instalada en menos de 30 min', 'Mantención de 50.000 km sin ir al taller'],
-  barberia: ['Fade limpio recién terminado 💈', 'Corte + barba con toalla caliente', 'Diseño a pedido del cliente', 'Así trabajamos a domicilio: todo desinfectado', 'Clásico que nunca falla'],
-  belleza: ['Semipermanente nude para el día a día 💅', 'Nail art para un matrimonio', 'Pedicure spa completo', 'Look de graduación ✨', 'Manicure francesa moderna'],
   aseo: ['Departamento listo para entregar ✨', 'Limpieza profunda de cocina terminada', 'Sofá como nuevo después del lavado', 'Aseo post mudanza en Las Condes', 'Productos incluidos, tú solo relájate'],
   gasfiteria: ['Calefont mantenido y funcionando perfecto 🔥', 'Fuga reparada bajo el lavaplatos', 'Instalación de grifería nueva', 'Destape resuelto en 40 minutos', 'Baño renovado con sanitarios nuevos'],
   electricidad: ['Tablero ordenado y etiquetado ⚡', 'Instalación de iluminación LED', 'Cambio de enchufes en toda la casa', 'Revisión con multímetro antes de entregar', 'Circuito nuevo para la cocina'],
@@ -189,8 +177,6 @@ const REVIEWS_GENERIC = [
 const REVIEWS_BY_CAT = {
   jardineria: [[5, 'El pasto quedó perfecto y se llevó todos los residuos.'], [5, 'Muy buena poda, el jardín quedó precioso.']],
   mecanica: [[5, 'Me cambió el aceite en el estacionamiento de mi edificio en 40 minutos.'], [5, 'Encontró la falla con el scanner al tiro. Muy honesto.']],
-  barberia: [[5, 'El mejor fade que me han hecho y sin moverme de la casa.'], [5, 'Trajo todo su equipo y dejó el baño impecable.']],
-  belleza: [[5, 'Las uñas me duraron 3 semanas perfectas.'], [5, 'Me maquilló para un matrimonio y quedé feliz.']],
   aseo: [[5, 'El depto quedó brillando. Muy detallista.'], [5, 'El sofá quedó como nuevo, increíble.']],
   gasfiteria: [[5, 'Arregló la fuga del calefont rápido y me explicó todo.'], [4, 'Buen trabajo con el destape, precio razonable.']],
   electricidad: [[5, 'Instaló todas las lámparas y dejó el tablero ordenado.'], [5, 'Resolvió un cortocircuito que nadie encontraba.']],

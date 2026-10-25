@@ -1,6 +1,6 @@
 # Kasa · Servicios a domicilio cerca de ti
 
-Web app (PWA) que conecta a personas que necesitan un servicio con el profesional **más cercano** o **mejor valorado**: jardineros, mecánicos, barberos a domicilio, gásfiter, electricistas y 16 categorías en total. Proyecto de emprendimiento 2026 · Santiago de Chile · precios en CLP.
+Web app (PWA) que conecta a personas que necesitan un servicio con el profesional **más cercano** o **mejor valorado**: jardineros, gásfiter, electricistas, aseo, maestros y 14 categorías en total. Proyecto de emprendimiento 2026 · Santiago de Chile · precios en CLP.
 
 **App publicada:** https://kasa-chile.vercel.app · la web app está en `/app`
 
@@ -8,7 +8,7 @@ Web app (PWA) que conecta a personas que necesitan un servicio con el profesiona
 ## Qué hace
 
 **Cliente**
-- Busca en lenguaje normal («alguien que me corte el pasto», «cambio de aceite», «uñas») y ve resultados en **lista o mapa**.
+- Busca en lenguaje normal («alguien que me corte el pasto», «cambio de aceite», «destape») y ve resultados en **lista o mapa**.
 - Ordena por recomendados, más cercanos, mejor valorados o menor precio. Filtros de distancia, valoración y disponibilidad.
 - Perfil de cada profesional estilo red social: fotos de trabajos, reseñas, servicios con precio, zona de trabajo, seguidores.
 - Reserva (día, hora, dirección) y **paga con tarjeta simulada**: cualquier número de 16 dígitos sirve (botón «Usar tarjeta de prueba»). Nunca se guarda el número completo, solo marca y últimos 4 dígitos.
@@ -33,9 +33,9 @@ En la pantalla de **Entrar** hay dos botones de acceso rápido:
 | Cuenta | Correo | Contraseña |
 |---|---|---|
 | Cliente (y admin del panel de negocio) | `cliente.demo@example.com` | `kasa-demo-2026` |
-| Profesional (Seba Barber, recibe solicitudes reales) | `profesional.demo@example.com` | `kasa-demo-2026` |
+| Profesional (Seba Gásfiter, recibe solicitudes reales) | `profesional.demo@example.com` | `kasa-demo-2026` |
 
-Los 48 profesionales de ejemplo **aceptan solos** las reservas a los pocos segundos y contestan en el chat, así la demo funciona con un solo teléfono.
+Los 42 profesionales de ejemplo **aceptan solos** las reservas a los pocos segundos y contestan en el chat, así la demo funciona con un solo teléfono.
 
 ## Guion de presentación (5 minutos)
 
@@ -43,7 +43,7 @@ Los 48 profesionales de ejemplo **aceptan solos** las reservas a los pocos segun
 2. Teléfono 1 → **Cliente demo**. Buscar «cortar el pasto» → ver lista y **mapa** → abrir un perfil → **Reservar y pagar** → «Usar tarjeta de prueba» → Pagar. A los 3 segundos el profesional acepta.
 3. Enseñar la reserva: el **teléfono del profesional se desbloquea** al aceptar (ese es el «contacto» que cobra la app). Abrir el chat y escribir: responde solo.
 4. «Confirmar trabajo realizado» → dejar reseña.
-5. Teléfono 2 → **Profesional demo**. Desde el teléfono 1 reservar a *Seba Barber*: la solicitud llega en vivo al panel del teléfono 2 → Aceptar → Marcar completado → ver **ganancia neta y comisión**.
+5. Teléfono 2 → **Profesional demo**. Desde el teléfono 1 reservar a *Seba Gásfiter*: la solicitud llega en vivo al panel del teléfono 2 → Aceptar → Marcar completado → ver **ganancia neta y comisión**.
 6. **Perfil → Modelo de negocio**: comisiones ganadas, reparto 90/10, comisión por día y por categoría. Subir la comisión al 12% en vivo y hacer otra reserva.
 
 Si presentáis fuera de Santiago: *Modelo de negocio → Traer profesionales demo a mi ubicación*.
@@ -65,7 +65,7 @@ src/
   context/        Sesión, ubicación, avisos y tiempo real
 supabase/
   schema.sql      Tablas, seguridad RLS, funciones, storage y realtime
-  seed.sql        Datos de ejemplo (48 profesionales en 18 comunas)
+  seed.sql        Datos de ejemplo (42 profesionales en 18 comunas)
   setup.sql       schema + seed en un solo archivo
   demo-accounts.sql  Datos de las cuentas demo
 scripts/          Generadores de datos de ejemplo e iconos

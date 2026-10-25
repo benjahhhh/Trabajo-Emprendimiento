@@ -19,7 +19,7 @@ import { requestNotifications } from '../../lib/notify'
 import { supabase } from '../../lib/supabase'
 import type { Category, Post, ProviderResult } from '../../lib/types'
 
-const QUICK = ['Corte de pasto', 'Cambio de aceite', 'Barbero', 'Gásfiter', 'Manicure', 'Paseo de perros', 'Electricista']
+const QUICK = ['Corte de pasto', 'Cambio de aceite', 'Gásfiter', 'Aseo de casa', 'Paseo de perros', 'Electricista']
 
 export default function Home() {
   const navigate = useNavigate()

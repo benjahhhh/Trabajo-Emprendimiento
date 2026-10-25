@@ -26,8 +26,8 @@ const FEATURES: { icon: LucideIcon; title: string; body: string; cls: string; ro
 const CATEGORIES = [
   { id: 'jardineria', name: 'Corte de pasto' },
   { id: 'mecanica', name: 'Mecánico a domicilio' },
-  { id: 'barberia', name: 'Barbero a domicilio' },
-  { id: 'belleza', name: 'Manicure y belleza' },
+  { id: 'maestro', name: 'Maestro y arreglos' },
+  { id: 'cerrajeria', name: 'Cerrajero' },
   { id: 'gasfiteria', name: 'Gásfiter' },
   { id: 'aseo', name: 'Aseo de casas' },
   { id: 'mascotas', name: 'Paseo de perros' },
@@ -35,11 +35,11 @@ const CATEGORIES = [
 ]
 
 const PRICES = [
-  ['Corte de pelo a domicilio', '$12.000', '45 min'],
   ['Corte de pasto (hasta 100 m²)', '$18.000', '1 h 30 min'],
   ['Cambio de aceite y filtro', '$45.000', '1 h'],
   ['Destape de cañería', '$25.000', '1 h'],
-  ['Manicure semipermanente', '$15.000', '1 h'],
+  ['Aseo general (4 horas)', '$35.000', '4 h'],
+  ['Instalación de lámpara', '$12.000', '45 min'],
   ['Paseo de perro', '$6.000', '1 h'],
 ]
 
@@ -64,7 +64,7 @@ export default function Landing() {
     for (const p of list) if (p.price_from > 0) minByCat[p.category_id] = Math.min(minByCat[p.category_id] ?? Infinity, p.price_from)
     const rated = list.filter((p) => p.rating_count > 0)
     const avg = rated.length ? rated.reduce((s, p) => s + Number(p.rating_avg), 0) / rated.length : 4.8
-    return { count: list.length || 48, avg, minByCat, cats: new Set(list.map((p) => p.category_id)).size || 16 }
+    return { count: list.length || 42, avg, minByCat, cats: new Set(list.map((p) => p.category_id)).size || 14 }
   }, [pins.data])
   const mapPins = useMemo(
     () => (pins.data ?? []).map((p) => ({ id: p.id, lat: p.lat, lng: p.lng, avatar: img(p.avatar_url, 88), name: p.display_name, tag: `★ ${fmtRating(p.rating_avg)}` })),
@@ -103,7 +103,7 @@ export default function Landing() {
               Servicios <span className="text-brand">a domicilio</span>, cerca de ti
             </h1>
             <p className="mt-5 max-w-[34ch] text-lg text-muted sm:text-xl">
-              Barberos, mecánicos, jardineros, gásfiter y más. Encuentra al más cercano o al mejor valorado, reserva y paga seguro en un minuto.
+              Jardineros, gásfiter, electricistas, aseo y más para tu casa. Encuentra al más cercano o al mejor valorado, reserva y paga seguro en un minuto.
             </p>
             <div className="mt-7 flex flex-wrap gap-3">
               <AppStoreBadge onClick={() => void install('ios')} />
@@ -155,7 +155,7 @@ export default function Landing() {
           <h2 className="text-[2.3rem] font-extrabold tracking-[-0.045em] sm:text-5xl">Cómo funciona</h2>
           <ol className="mt-10 grid gap-5 md:grid-cols-3">
             {[
-              { icon: Search, t: 'Busca lo que necesitas', d: '«Cortar el pasto», «cambio de aceite», «barbero»… Te mostramos a los profesionales en lista y en mapa.' },
+              { icon: Search, t: 'Busca lo que necesitas', d: '«Cortar el pasto», «destape de cañería», «electricista»… Te mostramos a los profesionales en lista y en mapa.' },
               { icon: BadgeCheck, t: 'Compara y elige', d: 'Ordena por cercanía, valoración o precio. Mira sus trabajos y reseñas, y escríbeles por el chat.' },
               { icon: CreditCard, t: 'Reserva y paga seguro', d: 'Elige día y hora, paga con tarjeta y listo. El pago se libera cuando confirmas el trabajo.' },
             ].map(({ icon: Icon, t, d }, i) => (

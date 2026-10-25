@@ -28,10 +28,10 @@ begin
 
   insert into public.providers (user_id, category_id, display_name, headline, bio, avatar_url, cover_url, comuna, lat, lng,
                                 service_radius_km, years_experience, available, verified, response_minutes)
-  values (v_pro, 'barberia', 'Seba Barber', 'Barbero a domicilio · Ñuñoa y Providencia',
-          'Barbero hace 6 años. Voy a tu casa u oficina con sillón plegable y todo desinfectado. Fades, clásicos y barba con toalla caliente.',
+  values (v_pro, 'gasfiteria', 'Seba Gásfiter', 'Gásfiter a domicilio · Ñuñoa y Providencia',
+          'Gásfiter hace 6 años, certificado SEC. Fugas, destapes, calefont y grifería. Llego con herramientas y dejo todo limpio.',
           'https://randomuser.me/api/portraits/men/75.jpg',
-          'https://images.unsplash.com/photo-1635273051937-a0ddef9573b6',
+          'https://images.unsplash.com/photo-1749532125405-70950966b0e5',
           'Ñuñoa', -33.4541, -70.6046, 12, 6, true, true, 5)
   on conflict (user_id) do update set category_id = excluded.category_id, display_name = excluded.display_name,
     headline = excluded.headline, bio = excluded.bio, avatar_url = excluded.avatar_url, cover_url = excluded.cover_url,
@@ -43,23 +43,23 @@ begin
 
   if not exists (select 1 from public.services where provider_id = v_provider) then
     insert into public.services (provider_id, title, description, price, duration_min) values
-      (v_provider, 'Corte a domicilio', 'Máquina y tijera, lavado incluido.', 12000, 45),
-      (v_provider, 'Corte + barba', 'Corte completo y perfilado con toalla caliente.', 17000, 60),
-      (v_provider, 'Perfilado de barba', 'Navaja, perfilado y bálsamo.', 8000, 25);
+      (v_provider, 'Visita y diagnóstico', 'Se descuenta si realizas el trabajo.', 15000, 45),
+      (v_provider, 'Destape de cañería', 'Lavaplatos, lavamanos o WC.', 25000, 60),
+      (v_provider, 'Mantención de calefont', 'Limpieza de quemadores y revisión de gases.', 30000, 90);
   end if;
 
   if not exists (select 1 from public.posts where provider_id = v_provider) then
     insert into public.posts (provider_id, image_url, caption, likes_count, created_at) values
-      (v_provider, 'https://images.unsplash.com/photo-1599351431202-1e0f0137899a', 'Fade con navaja recién terminado 💈', 184, now() - interval '5 hours'),
-      (v_provider, 'https://images.unsplash.com/photo-1599011176306-4a96f1516d4d', 'Perfilado de barba en Providencia', 97, now() - interval '2 days'),
-      (v_provider, 'https://images.unsplash.com/photo-1605497788044-5a32c7078486', 'Corte clásico para una entrevista de trabajo', 142, now() - interval '6 days');
+      (v_provider, 'https://images.unsplash.com/photo-1676210133055-eab6ef033ce3', 'Cambio de monomando en cocina 🔧', 184, now() - interval '5 hours'),
+      (v_provider, 'https://images.unsplash.com/photo-1620653713380-7a34b773fef8', 'Fuga reparada bajo el lavamanos en Providencia', 97, now() - interval '2 days'),
+      (v_provider, 'https://images.unsplash.com/photo-1596394723269-b2cbca4e6313', 'Mantención de calefont antes del invierno', 142, now() - interval '6 days');
   end if;
 
   if not exists (select 1 from public.reviews where provider_id = v_provider) then
     insert into public.reviews (provider_id, author_name, author_avatar, rating, comment, created_at) values
-      (v_provider, 'Tomás R.', 'https://randomuser.me/api/portraits/men/12.jpg', 5, 'Llegó puntual y el fade quedó perfecto. Lo recomiendo.', now() - interval '3 days'),
-      (v_provider, 'Diego M.', null, 5, 'Me cortó el pelo en la oficina en 30 minutos. Excelente.', now() - interval '9 days'),
-      (v_provider, 'Felipe A.', 'https://randomuser.me/api/portraits/men/41.jpg', 4, 'Muy buen corte, se demoró un poco en llegar.', now() - interval '15 days');
+      (v_provider, 'Tomás R.', 'https://randomuser.me/api/portraits/men/12.jpg', 5, 'Llegó puntual y arregló la fuga en media hora. Lo recomiendo.', now() - interval '3 days'),
+      (v_provider, 'Diego M.', null, 5, 'Destapó el lavaplatos y dejó todo limpio. Excelente.', now() - interval '9 days'),
+      (v_provider, 'Felipe A.', 'https://randomuser.me/api/portraits/men/41.jpg', 4, 'Buen trabajo con el calefont, se demoró un poco en llegar.', now() - interval '15 days');
   end if;
 
   update public.providers

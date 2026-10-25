@@ -129,7 +129,7 @@ export default function ProOnboarding() {
           <h2 className="font-extrabold">2 · Tu perfil público</h2>
           <div>
             <label className="label" htmlFor="dn">Nombre que verán los clientes</label>
-            <input id="dn" className="field" value={displayName} onChange={(e) => setDisplayName(e.target.value)} placeholder="Ej: Barber Nico" maxLength={60} />
+            <input id="dn" className="field" value={displayName} onChange={(e) => setDisplayName(e.target.value)} placeholder="Ej: Gásfiter Manuel" maxLength={60} />
           </div>
           <div>
             <label className="label" htmlFor="hl">Frase corta</label>

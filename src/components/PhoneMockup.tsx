@@ -7,8 +7,8 @@ import { LogoMark } from './Logo'
 const CATS = [
   { icon: 'Sprout', color: '#025FFB', name: 'Jardín' },
   { icon: 'Wrench', color: '#FD69CF', name: 'Mecánica' },
-  { icon: 'Scissors', color: '#081B3A', name: 'Barbería' },
-  { icon: 'Sparkles', color: '#D1E2FF', name: 'Belleza' },
+  { icon: 'Droplets', color: '#081B3A', name: 'Gásfiter' },
+  { icon: 'SprayCan', color: '#D1E2FF', name: 'Aseo' },
 ]
 
 // Maqueta de teléfono con la pantalla de inicio de la app (HTML, no imagen)
@@ -40,18 +40,18 @@ export function PhoneMockup({ className }: { className?: string }) {
         </div>
         <p className="px-3 pt-3 text-[12px] font-extrabold">Cerca de ti</p>
         <div className="mx-3 mt-1.5 overflow-hidden rounded-2xl border border-line">
-          <div className="relative h-[92px] bg-[url('https://images.unsplash.com/photo-1599351431202-1e0f0137899a?auto=format&fit=crop&w=480&h=200&q=60')] bg-cover bg-center">
+          <div className="relative h-[92px] bg-[url('https://images.unsplash.com/photo-1690068023694-053da714f95f?auto=format&fit=crop&w=480&h=200&q=60')] bg-cover bg-center">
             <span className="absolute left-2 top-2 rounded-full bg-white/90 px-1.5 py-0.5 text-[8px] font-bold">650 m</span>
           </div>
           <div className="flex items-center gap-2 p-2">
             <img src="https://randomuser.me/api/portraits/men/32.jpg" alt="" className="size-8 rounded-full object-cover" />
             <div className="min-w-0 flex-1">
-              <p className="truncate text-[11px] font-extrabold">Barber Nico</p>
+              <p className="truncate text-[11px] font-extrabold">Jardines Don Pedro</p>
               <p className="flex items-center gap-0.5 text-[9px] font-bold">
                 <Star className="size-2.5 fill-star text-star" /> 4,9 <span className="text-muted">(212)</span>
               </p>
             </div>
-            <span className="text-[10px] font-extrabold">$12.000</span>
+            <span className="text-[10px] font-extrabold">$18.000</span>
           </div>
         </div>
         <div className="mx-3 mt-2 flex items-center gap-2 rounded-2xl bg-mist p-2">
